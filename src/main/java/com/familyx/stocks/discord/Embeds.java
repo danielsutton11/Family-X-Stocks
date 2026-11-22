@@ -214,6 +214,38 @@ public final class Embeds {
                 .build();
     }
 
+    public static MessageEmbed help() {
+        return new EmbedBuilder().setColor(INFO)
+                .setTitle("How the Family X stock bot works")
+                .setDescription("The bot watches all 35 Torn stocks every minute and tells you when to buy and sell. "
+                        + "It can't trade for you: you make the trades in Torn yourself.")
+                .addField("The model portfolio",
+                        "The bot runs one shared portfolio that everyone copies. Each buy uses 10% of it, so it holds "
+                                + "up to 10 stocks at once. Use **Size for my budget** to turn it into share counts for "
+                                + "your money, whether that's 50m or 50b.", false)
+                .addField("When an alert comes in",
+                        "**Buy:** buy the shares Size for my budget gives you, as soon as you can.\n"
+                                + "**Sell:** sell all of that stock, whether it's up or down. Sticking to the sells is "
+                                + "what keeps losses small.", false)
+                .addField("How it picks trades",
+                        "Every night it tests three styles on a year of prices: buying dips that usually bounce back, "
+                                + "riding steady climbs, and buying breakouts to new highs. A stock only gets traded if "
+                                + "one style made money after Torn's 0.1% sell fee, and kept making money on recent "
+                                + "prices it wasn't tested on. Most stocks don't pass, and that's on purpose.", false)
+                .addField("Good to know",
+                        "You can't trade in hospital, in jail or abroad, so check **Open positions** for the current "
+                                + "price before acting on an old alert. Past results don't guarantee future ones; only "
+                                + "put in money you're happy to have tied up.", false)
+                .addField("The buttons",
+                        "**Open positions:** what the bot holds now\n"
+                                + "**Size for my budget:** your share counts\n"
+                                + "**Performance:** results so far\n"
+                                + "**Stock lookup:** one stock in detail\n"
+                                + "**Strategies:** which stocks it trades and why\n"
+                                + "**Backtest:** test strategies on past prices", false)
+                .build();
+    }
+
     public static MessageEmbed error(String message) {
         return new EmbedBuilder().setColor(SELL).setDescription(message).build();
     }

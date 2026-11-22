@@ -15,6 +15,7 @@ import jakarta.annotation.PreDestroy;
 import net.dv8tion.jda.api.JDA;
 import net.dv8tion.jda.api.JDABuilder;
 import net.dv8tion.jda.api.entities.MessageEmbed;
+import net.dv8tion.jda.api.entities.emoji.Emoji;
 import net.dv8tion.jda.api.entities.channel.concrete.TextChannel;
 import net.dv8tion.jda.api.events.interaction.ModalInteractionEvent;
 import net.dv8tion.jda.api.exceptions.InsufficientPermissionException;
@@ -29,6 +30,7 @@ import net.dv8tion.jda.api.interactions.components.text.TextInputStyle;
 import net.dv8tion.jda.api.interactions.modals.Modal;
 import net.dv8tion.jda.api.interactions.modals.ModalMapping;
 import net.dv8tion.jda.api.requests.restaction.interactions.ReplyCallbackAction;
+import net.dv8tion.jda.api.utils.messages.MessageEditBuilder;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.context.event.ApplicationReadyEvent;
@@ -40,6 +42,7 @@ import org.springframework.stereotype.Component;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Optional;
+import java.util.concurrent.TimeUnit;
 import java.util.function.Supplier;
 
 /**
@@ -48,12 +51,19 @@ import java.util.function.Supplier;
  *   <li>a control channel holding one panel embed with buttons, edited in place on restart and every hour;</li>
  *   <li>an alerts channel where buy and sell calls are posted, pinging the alert role.</li>
  * </ul>
- * Button and form replies are ephemeral, so the control channel only ever shows the panel.
+ * Button and form replies are private to the person who clicked and are deleted after about 15 minutes, so the
+ * control channel only ever shows the panel.
  */
 @Component
 public class DiscordBot extends ListenerAdapter {
     private static final Logger log = LoggerFactory.getLogger(DiscordBot.class);
     private static final String PANEL_SETTING = "panel_message_id";
+    /**
+     * Private replies are deleted after this long. Discord only lets a bot touch an interaction reply for 15
+     * minutes, so this sits just inside that window rather than exactly on it.
+     */
+    private static final long PRIVATE_REPLY_SECONDS = 14 * 60 + 50;
+    private static final String EXPIRY_NOTE = "-# Disappears in 15 minutes";
 
     private static final String BTN_SIGNALS = "panel:signals";
     private static final String BTN_SIZE = "panel:size";
@@ -61,6 +71,7 @@ public class DiscordBot extends ListenerAdapter {
     private static final String BTN_STOCK = "panel:stock";
     private static final String BTN_STRATEGIES = "panel:strategies";
     private static final String BTN_BACKTEST = "panel:backtest";
+    private static final String BTN_HELP = "panel:help";
     private static final String MODAL_SIZE = "modal:size";
     private static final String MODAL_STOCK = "modal:stock";
     private static final String MODAL_BACKTEST = "modal:backtest";
@@ -111,7 +122,8 @@ public class DiscordBot extends ListenerAdapter {
                 ActionRow.of(
                         Button.secondary(BTN_STOCK, "Stock lookup"),
                         Button.secondary(BTN_STRATEGIES, "Strategies"),
-                        Button.secondary(BTN_BACKTEST, "Backtest")));
+                        Button.secondary(BTN_BACKTEST, "Backtest"),
+                        Button.secondary(BTN_HELP, "How it works").withEmoji(Emoji.fromUnicode("❔"))));
     }
 
     /** Edits the existing panel message, or posts a new one if it was deleted or never posted. Runs hourly. */
@@ -170,6 +182,7 @@ public class DiscordBot extends ListenerAdapter {
         switch (event.getComponentId()) {
             case BTN_SIGNALS -> answer(event.deferReply(true), () -> Embeds.signals(portfolio.snapshot()), event.getComponentId());
             case BTN_PERFORMANCE -> answer(event.deferReply(true), this::performance, event.getComponentId());
+            case BTN_HELP -> answer(event.deferReply(true), Embeds::help, event.getComponentId());
             case BTN_STRATEGIES -> answer(event.deferReply(true),
                     () -> Embeds.strategies(repo.assignments(), portfolio.stocksById()), event.getComponentId());
             case BTN_SIZE -> event.replyModal(Modal.create(MODAL_SIZE, "Size for your budget")
@@ -231,7 +244,10 @@ public class DiscordBot extends ListenerAdapter {
             log.error("Panel action {} failed", what, e);
             embed = Embeds.error("Something went wrong. Try again in a minute.");
         }
-        hook.sendMessageEmbeds(embed).setEphemeral(true).queue();
+        // Replace the "thinking" placeholder, then remove the reply before the interaction token expires.
+        hook.editOriginal(new MessageEditBuilder().setContent(EXPIRY_NOTE).setEmbeds(embed).build())
+                .queue(sent -> hook.deleteOriginal().queueAfter(PRIVATE_REPLY_SECONDS, TimeUnit.SECONDS, null,
+                        err -> log.debug("Private reply already gone: {}", err.getMessage())));
     }
 
     // ---------- alerts ----------

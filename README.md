@@ -33,8 +33,9 @@ Dividends and benefit blocks are deliberately out of scope: this bot only buys a
 The bot uses two channels and no slash commands.
 
 **Control channel.** One panel message with a status strip (return, open positions, cash, live strategies)
-and six buttons. The bot posts and pins it on first start, then edits the same message on every restart and
-once an hour. Every reply is visible only to the person who clicked, so the channel only ever shows the panel.
+and seven buttons. The bot posts and pins it on first start, then edits the same message on every restart and
+once an hour. Every reply is visible only to the person who clicked and is deleted after about 15 minutes (14m50s, just inside
+Discord's 15-minute limit for editing interaction replies), so the channel only ever shows the panel.
 
 | Button | What it does |
 |---|---|
@@ -44,6 +45,7 @@ once an hour. Every reply is visible only to the person who clicked, so the chan
 | Stock lookup | Pop-up asks for an acronym; price, 1h/24h/7d moves, z-score, strategy and its evidence |
 | Strategies | Every stock's assigned strategy with its backtest numbers |
 | Backtest | Pop-up asks for an acronym and optional strategy id; backtests stored history |
+| How it works | Plain-English guide to the model portfolio, alerts, strategy selection and the buttons |
 
 If someone deletes the panel, the next hourly refresh or restart posts a new one.
 
