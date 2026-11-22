@@ -33,7 +33,7 @@ Dividends and benefit blocks are deliberately out of scope: this bot only buys a
 The bot uses two channels and no slash commands.
 
 **Control channel.** One panel message with a status strip (return, open positions, cash, live strategies)
-and seven buttons. The bot posts and pins it on first start, then edits the same message on every restart and
+and eight buttons. The bot posts and pins it on first start, then edits the same message on every restart and
 once an hour. Every reply is visible only to the person who clicked and is deleted after about 15 minutes (14m50s, just inside
 Discord's 15-minute limit for editing interaction replies), so the channel only ever shows the panel.
 
@@ -46,6 +46,7 @@ Discord's 15-minute limit for editing interaction replies), so the channel only 
 | Strategies | Every stock's assigned strategy with its backtest numbers |
 | Backtest | Pop-up asks for an acronym and optional strategy id; backtests stored history |
 | How it works | Plain-English guide to the model portfolio, alerts, strategy selection and the buttons |
+| Export data | Owner only. Private JSON file with settings, every trade, the equity curve and every strategy's backtest on every stock (with the rule each one failed), for uploading to Claude to tune settings |
 
 If someone deletes the panel, the next hourly refresh or restart posts a new one.
 
@@ -65,10 +66,11 @@ If someone deletes the panel, the next hourly refresh or restart posts a new one
 | `DISCORD_CONTROL_CHANNEL_ID` | Channel for the control panel |
 | `DISCORD_ALERT_CHANNEL_ID` | Channel for buy/sell alerts |
 | `DISCORD_ALERT_ROLE_ID` | Optional; defaults to `1574038019638296647` |
+| `DISCORD_OWNER_ID` | Your Discord user id; only you can use Export data (blank = server administrators) |
 | `PGHOST`, `PGPORT`, `PGDATABASE`, `PGUSER`, `PGPASSWORD` | Reference variables from the Postgres service, e.g. `${{Postgres.PGHOST}}` |
 
 Optional: `TORNSY_BACKFILL` (default `true`), `TORNSY_BACKFILL_MONTHS` (12), `TRADING_POSITION_SIZE` (0.10),
-`TRADING_MIN_POSITION` (0.02), `TICK_RETENTION_DAYS` (14).
+`TRADING_MIN_POSITION` (0.02), `JAVA_OPTS` (JVM flags; the Dockerfile sets a 192 MB heap).
 
 Invite the bot with the `bot` scope. In both channels it needs View Channel, Send Messages, Embed Links and Read
 Message History (to find and edit the panel). Manage Messages in the control channel lets it pin the panel;
@@ -86,8 +88,11 @@ First start takes a few minutes while it backfills 35 stocks from Tornsy and run
 - The model portfolio is shared; Size for my budget scales it to any budget using each position's current weight.
 - Backtests are not promises. Treat the first few weeks of live alerts as the real test, and watch
   Performance against buy and hold.
-- The bot uses one Torn API call a minute and makes about 50k price rows a day; minute ticks are pruned after 14
-  days, hourly bars are kept.
+- The bot uses one Torn API call a minute and three batched database writes a minute. It stores hourly bars
+  (about 300k rows a year for all 35 stocks, roughly 25 MB), which the strategies use, and 15-minute bars
+  (about 1.2M rows a year, roughly 100 MB), kept for testing faster strategies later. Neither is ever pruned.
+- Running cost is mostly memory. The JVM heap is capped at 192 MB and Discord sends no gateway traffic beyond what
+  buttons need, so the bot should sit around 200–250 MB in total.
 
 ## Layout
 

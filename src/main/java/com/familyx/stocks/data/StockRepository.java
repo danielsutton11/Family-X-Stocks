@@ -5,6 +5,7 @@ import com.familyx.stocks.data.Models.PortfolioState;
 import com.familyx.stocks.data.Models.Position;
 import com.familyx.stocks.data.Models.StockRow;
 import com.familyx.stocks.engine.Bar;
+import com.familyx.stocks.torn.StockQuote;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.RowMapper;
 import org.springframework.stereotype.Repository;
@@ -37,14 +38,6 @@ public class StockRepository {
 
     // ---------- stocks and prices ----------
 
-    public void upsertStock(int id, String acronym, String name, double price, long ts) {
-        jdbc.update("""
-                insert into stock (id, acronym, name, price, updated_ts) values (?, ?, ?, ?, ?)
-                on conflict (id) do update set acronym = excluded.acronym, name = excluded.name,
-                    price = excluded.price, updated_ts = excluded.updated_ts
-                """, id, acronym, name, price, ts);
-    }
-
     public List<StockRow> stocks() {
         return jdbc.query("select id, acronym, name, price, updated_ts from stock order by id",
                 (rs, i) -> new StockRow(rs.getInt(1), rs.getString(2), rs.getString(3), rs.getDouble(4), rs.getLong(5)));
@@ -54,18 +47,42 @@ public class StockRepository {
         return stocks().stream().filter(s -> s.acronym().equalsIgnoreCase(acronym)).findFirst();
     }
 
-    public void insertTick(int stockId, long ts, double price) {
-        jdbc.update("insert into price_tick (stock_id, ts, price) values (?, ?, ?) on conflict do nothing",
-                stockId, ts, price);
+    /**
+     * Records one minute's prices for every stock in three batched statements: the stock table's latest price,
+     * the current hour's bar and the current 15-minute bar (each created on its first minute, then high/low/close
+     * updated).
+     */
+    public void recordMinute(List<StockQuote> quotes, long ts, long hourTs) {
+        if (quotes.isEmpty()) {
+            return;
+        }
+        jdbc.batchUpdate("""
+                insert into stock (id, acronym, name, price, updated_ts) values (?, ?, ?, ?, ?)
+                on conflict (id) do update set acronym = excluded.acronym, name = excluded.name,
+                    price = excluded.price, updated_ts = excluded.updated_ts
+                """, quotes, quotes.size(), (ps, q) -> {
+            ps.setInt(1, q.id());
+            ps.setString(2, q.acronym());
+            ps.setString(3, q.name());
+            ps.setDouble(4, q.price());
+            ps.setLong(5, ts);
+        });
+        upsertBars("bar_hourly", quotes, hourTs);
+        upsertBars("bar_15m", quotes, ts / 900 * 900);
     }
 
-    /** Adds a minute price to the hour's bar, creating the bar on the hour's first tick. */
-    public void addToHourBar(int stockId, long hourTs, double price) {
-        jdbc.update("""
-                insert into bar_hourly (stock_id, ts, open, high, low, close) values (?, ?, ?, ?, ?, ?)
-                on conflict (stock_id, ts) do update set high = greatest(bar_hourly.high, excluded.high),
-                    low = least(bar_hourly.low, excluded.low), close = excluded.close
-                """, stockId, hourTs, price, price, price, price);
+    private void upsertBars(String table, List<StockQuote> quotes, long barTs) {
+        jdbc.batchUpdate("insert into " + table + " (stock_id, ts, open, high, low, close) values (?, ?, ?, ?, ?, ?) "
+                + "on conflict (stock_id, ts) do update set high = greatest(" + table + ".high, excluded.high), "
+                + "low = least(" + table + ".low, excluded.low), close = excluded.close",
+                quotes, quotes.size(), (ps, q) -> {
+                    ps.setInt(1, q.id());
+                    ps.setLong(2, barTs);
+                    ps.setDouble(3, q.price());
+                    ps.setDouble(4, q.price());
+                    ps.setDouble(5, q.price());
+                    ps.setDouble(6, q.price());
+                });
     }
 
     public void insertBarsIfAbsent(int stockId, List<Bar> bars) {
@@ -103,10 +120,6 @@ public class StockRepository {
                 "select close from bar_hourly where stock_id = ? and ts <= ? order by ts desc limit 1",
                 Double.class, stockId, ts);
         return r.stream().findFirst();
-    }
-
-    public int pruneTicks(long beforeTs) {
-        return jdbc.update("delete from price_tick where ts < ?", beforeTs);
     }
 
     private static final RowMapper<Bar> BAR = (rs, i) ->
@@ -211,6 +224,15 @@ public class StockRepository {
                 rs.getObject("trail_pct", Double.class), rs.getDouble("high_water"), rs.getLong("max_hold_until"),
                 rs.getString("reason"), rs.getObject("exit_ts", Long.class), rs.getObject("exit_price", Double.class),
                 rs.getString("exit_reason"), rs.getObject("net_return", Double.class));
+    }
+
+    public List<Position> allPositions() {
+        return jdbc.query("select * from model_position order by entry_ts", StockRepository::position);
+    }
+
+    public List<Models.EquityPoint> equityCurve() {
+        return jdbc.query("select ts, equity from equity_snapshot order by ts",
+                (rs, i) -> new Models.EquityPoint(rs.getLong(1), rs.getDouble(2)));
     }
 
     public void snapshotEquity(long ts, double equity) {

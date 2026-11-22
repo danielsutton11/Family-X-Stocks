@@ -87,11 +87,7 @@ public class MarketService {
         List<StockQuote> quotes = torn.fetchStocks();
         long now = System.currentTimeMillis() / 1000 / 60 * 60;
         long hour = now / 3600 * 3600;
-        for (StockQuote q : quotes) {
-            repo.upsertStock(q.id(), q.acronym(), q.name(), q.price(), now);
-            repo.insertTick(q.id(), now, q.price());
-            repo.addToHourBar(q.id(), hour, q.price());
-        }
+        repo.recordMinute(quotes, now, hour);
         return now;
     }
 
@@ -127,10 +123,4 @@ public class MarketService {
         }
     }
 
-    @Scheduled(cron = "0 20 0 * * *", zone = "UTC")
-    public void pruneTicks() {
-        long cutoff = System.currentTimeMillis() / 1000 - props.trading().tickRetentionDays() * 86400L;
-        int n = repo.pruneTicks(cutoff);
-        log.info("Pruned {} old minute ticks", n);
-    }
 }

@@ -11,9 +11,11 @@ public record BotProperties(Torn torn, Tornsy tornsy, Discord discord, Trading t
     public record Tornsy(boolean backfillEnabled, int backfillMonths) {
     }
 
-    public record Discord(String token, String controlChannelId, String alertChannelId, String alertRoleId) {
+    /** @param ownerId Discord user id allowed to export data; when blank, server administrators can. */
+    public record Discord(String token, String controlChannelId, String alertChannelId, String alertRoleId,
+                          String ownerId) {
     }
 
-    public record Trading(double positionSize, double minPosition, int tickRetentionDays) {
+    public record Trading(double positionSize, double minPosition) {
     }
 }

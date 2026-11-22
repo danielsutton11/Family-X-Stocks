@@ -32,4 +32,7 @@ public final class Models {
 
     public record PortfolioState(double cash, long inceptionTs) {
     }
+
+    public record EquityPoint(long ts, double equity) {
+    }
 }

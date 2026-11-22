@@ -10,10 +10,13 @@ import com.familyx.stocks.engine.Indicators;
 import com.familyx.stocks.engine.Strategies;
 import com.familyx.stocks.engine.Strategy;
 import com.familyx.stocks.service.PortfolioService;
+import com.familyx.stocks.service.ExportService;
 import com.familyx.stocks.service.TradeEvents;
 import jakarta.annotation.PreDestroy;
 import net.dv8tion.jda.api.JDA;
 import net.dv8tion.jda.api.JDABuilder;
+import net.dv8tion.jda.api.Permission;
+import net.dv8tion.jda.api.entities.Member;
 import net.dv8tion.jda.api.entities.MessageEmbed;
 import net.dv8tion.jda.api.entities.emoji.Emoji;
 import net.dv8tion.jda.api.entities.channel.concrete.TextChannel;
@@ -22,6 +25,7 @@ import net.dv8tion.jda.api.exceptions.InsufficientPermissionException;
 import net.dv8tion.jda.api.events.interaction.component.ButtonInteractionEvent;
 import net.dv8tion.jda.api.events.session.ReadyEvent;
 import net.dv8tion.jda.api.hooks.ListenerAdapter;
+import net.dv8tion.jda.api.requests.GatewayIntent;
 import net.dv8tion.jda.api.interactions.InteractionHook;
 import net.dv8tion.jda.api.interactions.components.ActionRow;
 import net.dv8tion.jda.api.interactions.components.buttons.Button;
@@ -30,6 +34,7 @@ import net.dv8tion.jda.api.interactions.components.text.TextInputStyle;
 import net.dv8tion.jda.api.interactions.modals.Modal;
 import net.dv8tion.jda.api.interactions.modals.ModalMapping;
 import net.dv8tion.jda.api.requests.restaction.interactions.ReplyCallbackAction;
+import net.dv8tion.jda.api.utils.FileUpload;
 import net.dv8tion.jda.api.utils.messages.MessageEditBuilder;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -39,7 +44,11 @@ import org.springframework.core.annotation.Order;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
+import java.time.Instant;
+import java.time.ZoneOffset;
+import java.time.format.DateTimeFormatter;
 import java.util.Comparator;
+import java.util.EnumSet;
 import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.TimeUnit;
@@ -64,6 +73,8 @@ public class DiscordBot extends ListenerAdapter {
      */
     private static final long PRIVATE_REPLY_SECONDS = 14 * 60 + 50;
     private static final String EXPIRY_NOTE = "-# Disappears in 15 minutes";
+    private static final DateTimeFormatter EXPORT_NAME =
+            DateTimeFormatter.ofPattern("yyyy-MM-dd-HHmm").withZone(ZoneOffset.UTC);
 
     private static final String BTN_SIGNALS = "panel:signals";
     private static final String BTN_SIZE = "panel:size";
@@ -72,6 +83,7 @@ public class DiscordBot extends ListenerAdapter {
     private static final String BTN_STRATEGIES = "panel:strategies";
     private static final String BTN_BACKTEST = "panel:backtest";
     private static final String BTN_HELP = "panel:help";
+    private static final String BTN_EXPORT = "panel:export";
     private static final String MODAL_SIZE = "modal:size";
     private static final String MODAL_STOCK = "modal:stock";
     private static final String MODAL_BACKTEST = "modal:backtest";
@@ -79,12 +91,14 @@ public class DiscordBot extends ListenerAdapter {
     private final BotProperties.Discord cfg;
     private final StockRepository repo;
     private final PortfolioService portfolio;
+    private final ExportService exports;
     private volatile JDA jda;
 
-    public DiscordBot(BotProperties props, StockRepository repo, PortfolioService portfolio) {
+    public DiscordBot(BotProperties props, StockRepository repo, PortfolioService portfolio, ExportService exports) {
         this.cfg = props.discord();
         this.repo = repo;
         this.portfolio = portfolio;
+        this.exports = exports;
     }
 
     /** Starts before the market backfill so the panel works while history loads. */
@@ -95,7 +109,8 @@ public class DiscordBot extends ListenerAdapter {
             log.warn("DISCORD_TOKEN is not set; running without Discord");
             return;
         }
-        jda = JDABuilder.createLight(cfg.token()).addEventListeners(this).build();
+        // Buttons, forms and posting need no gateway intents, so Discord sends no message or presence traffic.
+        jda = JDABuilder.createLight(cfg.token(), EnumSet.noneOf(GatewayIntent.class)).addEventListeners(this).build();
     }
 
     @PreDestroy
@@ -123,7 +138,8 @@ public class DiscordBot extends ListenerAdapter {
                         Button.secondary(BTN_STOCK, "Stock lookup"),
                         Button.secondary(BTN_STRATEGIES, "Strategies"),
                         Button.secondary(BTN_BACKTEST, "Backtest"),
-                        Button.secondary(BTN_HELP, "How it works").withEmoji(Emoji.fromUnicode("❔"))));
+                        Button.secondary(BTN_HELP, "How it works").withEmoji(Emoji.fromUnicode("❔")),
+                        Button.secondary(BTN_EXPORT, "Export data").withEmoji(Emoji.fromUnicode("📥"))));
     }
 
     /** Edits the existing panel message, or posts a new one if it was deleted or never posted. Runs hourly. */
@@ -182,6 +198,7 @@ public class DiscordBot extends ListenerAdapter {
         switch (event.getComponentId()) {
             case BTN_SIGNALS -> answer(event.deferReply(true), () -> Embeds.signals(portfolio.snapshot()), event.getComponentId());
             case BTN_PERFORMANCE -> answer(event.deferReply(true), this::performance, event.getComponentId());
+            case BTN_EXPORT -> export(event);
             case BTN_HELP -> answer(event.deferReply(true), Embeds::help, event.getComponentId());
             case BTN_STRATEGIES -> answer(event.deferReply(true),
                     () -> Embeds.strategies(repo.assignments(), portfolio.stocksById()), event.getComponentId());
@@ -248,6 +265,37 @@ public class DiscordBot extends ListenerAdapter {
         hook.editOriginal(new MessageEditBuilder().setContent(EXPIRY_NOTE).setEmbeds(embed).build())
                 .queue(sent -> hook.deleteOriginal().queueAfter(PRIVATE_REPLY_SECONDS, TimeUnit.SECONDS, null,
                         err -> log.debug("Private reply already gone: {}", err.getMessage())));
+    }
+
+    // ---------- export ----------
+
+    private boolean mayExport(ButtonInteractionEvent event) {
+        if (!blank(cfg.ownerId())) {
+            return cfg.ownerId().equals(event.getUser().getId());
+        }
+        Member m = event.getMember();
+        return m != null && m.hasPermission(Permission.ADMINISTRATOR);
+    }
+
+    /** Sends the owner a private JSON file to upload to Claude for analysis. */
+    private void export(ButtonInteractionEvent event) {
+        if (!mayExport(event)) {
+            answer(event.deferReply(true), () -> Embeds.error("Export is only available to the bot owner."), BTN_EXPORT);
+            return;
+        }
+        event.deferReply(true).queue(hook -> {
+            MessageEditBuilder msg = new MessageEditBuilder().setContent(EXPIRY_NOTE);
+            try {
+                ExportService.Export ex = exports.build();
+                String name = "stock-bot-export-" + EXPORT_NAME.format(Instant.now()) + ".json";
+                msg.setEmbeds(Embeds.exportReady(ex)).setFiles(FileUpload.fromData(ex.json(), name));
+            } catch (Exception e) {
+                log.error("Export failed", e);
+                msg.setEmbeds(Embeds.error("Export failed. Check the bot logs."));
+            }
+            hook.editOriginal(msg.build()).queue(sent -> hook.deleteOriginal().queueAfter(PRIVATE_REPLY_SECONDS,
+                    TimeUnit.SECONDS, null, err -> log.debug("Private reply already gone: {}", err.getMessage())));
+        });
     }
 
     // ---------- alerts ----------

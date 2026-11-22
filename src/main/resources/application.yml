@@ -9,7 +9,9 @@ spring:
     username: ${PGUSER:postgres}
     password: ${PGPASSWORD:postgres}
     hikari:
-      maximum-pool-size: 5
+      # One scheduler thread plus the odd button press: two connections is plenty.
+      maximum-pool-size: 2
+      minimum-idle: 1
   flyway:
     enabled: true
 
@@ -26,13 +28,13 @@ bot:
     # Channel for buy and sell alerts, which ping the role below.
     alert-channel-id: ${DISCORD_ALERT_CHANNEL_ID:}
     alert-role-id: ${DISCORD_ALERT_ROLE_ID:1574038019638296647}
+    # Your Discord user id: only this user can use Export data. Blank means server administrators.
+    owner-id: ${DISCORD_OWNER_ID:}
   trading:
     # Share of model-portfolio equity put into each new position.
     position-size: ${TRADING_POSITION_SIZE:0.10}
     # Never open a position smaller than this share of equity.
     min-position: ${TRADING_MIN_POSITION:0.02}
-    # Days of minute ticks to keep; hourly bars are kept for good.
-    tick-retention-days: ${TICK_RETENTION_DAYS:14}
 
 logging:
   level:

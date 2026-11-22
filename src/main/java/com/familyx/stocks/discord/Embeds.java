@@ -7,6 +7,7 @@ import com.familyx.stocks.engine.BacktestResult;
 import com.familyx.stocks.engine.ExitReason;
 import com.familyx.stocks.engine.Strategies;
 import com.familyx.stocks.engine.Strategy;
+import com.familyx.stocks.service.ExportService;
 import com.familyx.stocks.service.PortfolioService.Holding;
 import com.familyx.stocks.service.PortfolioService.Snapshot;
 import net.dv8tion.jda.api.EmbedBuilder;
@@ -242,7 +243,20 @@ public final class Embeds {
                                 + "**Performance:** results so far\n"
                                 + "**Stock lookup:** one stock in detail\n"
                                 + "**Strategies:** which stocks it trades and why\n"
-                                + "**Backtest:** test strategies on past prices", false)
+                                + "**Backtest:** test strategies on past prices\n"
+                                + "**Export data:** bot owner only, for tuning the settings", false)
+                .build();
+    }
+
+    public static MessageEmbed exportReady(ExportService.Export ex) {
+        return new EmbedBuilder().setColor(INFO)
+                .setTitle("Export ready")
+                .setDescription("Download the file and upload it to Claude.\n\n"
+                        + "Settings and selection rules: current\n"
+                        + "Trades (open and closed): " + ex.trades() + "\n"
+                        + "Hourly equity curve: " + ex.equityPoints() + " points\n"
+                        + "Strategy backtests: " + ex.stocks() + " stocks × " + ex.strategies())
+                .setFooter("Backtests include why each rejected strategy failed, so near-misses are visible")
                 .build();
     }
 
