@@ -28,6 +28,7 @@ public final class Embeds {
     static final Color SELL = new Color(0xED4245);
     static final Color INFO = new Color(0x5865F2);
     private static final DateTimeFormatter DAY = DateTimeFormatter.ofPattern("d MMM", Locale.UK).withZone(ZoneOffset.UTC);
+    private static final DateTimeFormatter TIME = DateTimeFormatter.ofPattern("HH:mm", Locale.UK).withZone(ZoneOffset.UTC);
 
     private Embeds() {
     }
@@ -66,6 +67,8 @@ public final class Embeds {
         ExitReason reason = ExitReason.valueOf(p.exitReason());
         return new EmbedBuilder().setColor(SELL)
                 .setTitle("Sell " + s.acronym() + " · " + reason.label())
+                .setDescription("Sell the " + s.acronym() + " shares you bought on the buy alert for position #" + p.id()
+                        + ". Don't sell shares that make up a benefit block.")
                 .addField("Exit", Fmt.price(p.exitPrice()), true)
                 .addField("Result", Fmt.pct(p.netReturn()) + " after fee", true)
                 .addField("Held", Fmt.duration(p.exitTs() - p.entryTs()), true)
@@ -226,8 +229,11 @@ public final class Embeds {
                                 + "your money, whether that's 50m or 50b.", false)
                 .addField("When an alert comes in",
                         "**Buy:** buy the shares Size for my budget gives you, as soon as you can.\n"
-                                + "**Sell:** sell all of that stock, whether it's up or down. Sticking to the sells is "
-                                + "what keeps losses small.", false)
+                                + "**Sell:** sell the shares you bought for that trade, whether they're up or down. "
+                                + "Sticking to the sells is what keeps losses small.\n"
+                                + "**Benefit blocks:** the bot ignores dividends. Leave your blocks out of your budget "
+                                + "and never sell block shares on a sell alert.\n"
+                                + "Old buy alerts are marked **Closed** when the trade ends, so don't act on those.", false)
                 .addField("How it picks trades",
                         "Every night it tests three styles on a year of prices: buying dips that usually bounce back, "
                                 + "riding steady climbs, and buying breakouts to new highs. A stock only gets traded if "
@@ -257,6 +263,37 @@ public final class Embeds {
                         + "Hourly equity curve: " + ex.equityPoints() + " points\n"
                         + "Strategy backtests: " + ex.stocks() + " stocks × " + ex.strategies())
                 .setFooter("Backtests include why each rejected strategy failed, so near-misses are visible")
+                .build();
+    }
+
+    static final Color CLOSED = new Color(0x80848E);
+    static final Color WARN = new Color(0xFAA61A);
+
+    /** The original buy alert, greyed out with the result appended, so nobody acts on a finished trade. */
+    public static MessageEmbed buyClosed(MessageEmbed original, Position p) {
+        ExitReason reason = ExitReason.valueOf(p.exitReason());
+        return new EmbedBuilder(original).setColor(CLOSED)
+                .setTitle("Closed · " + original.getTitle())
+                .addField("Result", Fmt.pct(p.netReturn()) + " after fee · " + reason.label() + " after "
+                        + Fmt.duration(p.exitTs() - p.entryTs()) + " · don't act on this alert", false)
+                .build();
+    }
+
+    public static MessageEmbed collectionDown(String error, long sinceTs) {
+        return new EmbedBuilder().setColor(WARN)
+                .setTitle("Price collection has stopped")
+                .setDescription("No prices for 15 minutes, so the bot can't trade or close positions. Last error: "
+                        + error + ".")
+                .setFooter("Failing since " + TIME.format(Instant.ofEpochSecond(sinceTs))
+                        + " TCT · you'll get one more message when it recovers")
+                .build();
+    }
+
+    public static MessageEmbed collectionUp(long sinceTs, long nowTs) {
+        return new EmbedBuilder().setColor(BUY)
+                .setTitle("Price collection is back")
+                .setDescription("Prices are coming in again after " + Fmt.duration(nowTs - sinceTs)
+                        + ". Stops and targets are being checked as normal.")
                 .build();
     }
 

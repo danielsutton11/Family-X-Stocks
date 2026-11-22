@@ -51,7 +51,15 @@ Discord's 15-minute limit for editing interaction replies), so the channel only 
 If someone deletes the panel, the next hourly refresh or restart posts a new one.
 
 **Alerts channel.** Buy and sell calls, each pinging role `1574038019638296647` (override with
-`DISCORD_ALERT_ROLE_ID`).
+`DISCORD_ALERT_ROLE_ID`). Sell alerts say to sell only the shares bought for that trade, never benefit-block
+shares. When a trade closes, its original buy alert is greyed out and marked **Closed** with the result.
+
+**Outage warnings.** If price collection fails for 15 minutes (Torn API down, key revoked), the bot sends the
+owner (`DISCORD_OWNER_ID`) a direct message with the last error, and another when it recovers. Without an owner
+id, or if DMs are closed, the notice goes to the alerts channel without a ping.
+
+**Restarts.** The bot remembers the last hour it processed, so a restart just after the hour still runs that
+hour's checks.
 
 ## Deploying on Railway
 

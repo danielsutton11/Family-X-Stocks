@@ -14,4 +14,8 @@ public final class TradeEvents {
 
     public record Closed(Position position, StockRow stock) {
     }
+
+    /** Price collection has been failing for a while ({@code down}), or has recovered after such a stretch. */
+    public record CollectionHealth(boolean down, String lastError, long sinceTs, long nowTs) {
+    }
 }

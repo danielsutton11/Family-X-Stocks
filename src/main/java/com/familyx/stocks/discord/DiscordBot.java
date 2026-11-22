@@ -1,6 +1,7 @@
 package com.familyx.stocks.discord;
 
 import com.familyx.stocks.config.BotProperties;
+import com.familyx.stocks.data.Models.Position;
 import com.familyx.stocks.data.Models.StockRow;
 import com.familyx.stocks.data.StockRepository;
 import com.familyx.stocks.engine.BacktestResult;
@@ -17,7 +18,9 @@ import net.dv8tion.jda.api.JDA;
 import net.dv8tion.jda.api.JDABuilder;
 import net.dv8tion.jda.api.Permission;
 import net.dv8tion.jda.api.entities.Member;
+import net.dv8tion.jda.api.entities.Message;
 import net.dv8tion.jda.api.entities.MessageEmbed;
+import net.dv8tion.jda.api.entities.User;
 import net.dv8tion.jda.api.entities.emoji.Emoji;
 import net.dv8tion.jda.api.entities.channel.concrete.TextChannel;
 import net.dv8tion.jda.api.events.interaction.ModalInteractionEvent;
@@ -52,6 +55,7 @@ import java.util.EnumSet;
 import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Consumer;
 import java.util.function.Supplier;
 
 /**
@@ -302,15 +306,53 @@ public class DiscordBot extends ListenerAdapter {
 
     @EventListener
     public void onOpened(TradeEvents.Opened e) {
-        post(Embeds.buy(e.position(), e.stock(), e.evidence()));
+        long positionId = e.position().id();
+        post(Embeds.buy(e.position(), e.stock(), e.evidence()), true,
+                msg -> repo.setAlertMessageId(positionId, msg.getId()));
     }
 
     @EventListener
     public void onClosed(TradeEvents.Closed e) {
-        post(Embeds.sell(e.position(), e.stock()));
+        post(Embeds.sell(e.position(), e.stock()), true, null);
+        markBuyAlertClosed(e.position());
     }
 
-    private void post(MessageEmbed embed) {
+    /** Greys out the position's original buy alert and adds the result. Alerts from before this feature are skipped. */
+    private void markBuyAlertClosed(Position closed) {
+        Optional<String> messageId = repo.alertMessageId(closed.id());
+        TextChannel ch = jda == null || blank(cfg.alertChannelId()) ? null : jda.getTextChannelById(cfg.alertChannelId());
+        if (messageId.isEmpty() || ch == null) {
+            return;
+        }
+        ch.retrieveMessageById(messageId.get()).queue(msg -> {
+            if (!msg.getEmbeds().isEmpty()) {
+                msg.editMessageEmbeds(Embeds.buyClosed(msg.getEmbeds().get(0), closed)).queue(null,
+                        err -> log.warn("Couldn't mark buy alert closed: {}", err.getMessage()));
+            }
+        }, err -> log.info("Buy alert for position #{} not found; skipping", closed.id()));
+    }
+
+    /** Tells the owner by direct message when price collection stops and when it recovers. */
+    @EventListener
+    public void onCollectionHealth(TradeEvents.CollectionHealth h) {
+        MessageEmbed embed = h.down() ? Embeds.collectionDown(h.lastError(), h.sinceTs())
+                : Embeds.collectionUp(h.sinceTs(), h.nowTs());
+        if (jda == null) {
+            return;
+        }
+        if (!blank(cfg.ownerId())) {
+            jda.retrieveUserById(cfg.ownerId()).flatMap(User::openPrivateChannel)
+                    .flatMap(dm -> dm.sendMessageEmbeds(embed))
+                    .queue(null, err -> {
+                        log.warn("Couldn't DM the owner ({}); posting the health notice in the alerts channel", err.getMessage());
+                        post(embed, false, null);
+                    });
+        } else {
+            post(embed, false, null);
+        }
+    }
+
+    private void post(MessageEmbed embed, boolean pingRole, Consumer<Message> onSent) {
         if (jda == null || blank(cfg.alertChannelId())) {
             return;
         }
@@ -321,11 +363,11 @@ public class DiscordBot extends ListenerAdapter {
         }
         try {
             var msg = ch.sendMessageEmbeds(embed);
-            if (!blank(cfg.alertRoleId())) {
+            if (pingRole && !blank(cfg.alertRoleId())) {
                 // mentionRoles whitelists just this role, so the ping works without allowing @everyone.
                 msg = msg.setContent("<@&" + cfg.alertRoleId() + ">").mentionRoles(cfg.alertRoleId());
             }
-            msg.queue(null, err -> log.warn("Couldn't post alert: {}", err.getMessage()));
+            msg.queue(onSent, err -> log.warn("Couldn't post alert: {}", err.getMessage()));
         } catch (InsufficientPermissionException e) {
             log.warn("Can't post alerts in #{}: missing {}", ch.getName(), e.getPermission().getName());
         }

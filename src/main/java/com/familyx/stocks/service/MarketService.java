@@ -10,6 +10,7 @@ import com.familyx.stocks.torn.TornsyClient;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.context.event.ApplicationReadyEvent;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.context.event.EventListener;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
@@ -33,11 +34,21 @@ public class MarketService {
     private final PortfolioService portfolio;
     private final BotProperties props;
 
+    private static final String LAST_HOUR_SETTING = "last_hour_ts";
+    /** Warn the owner after this long without a successful price collection. */
+    private static final long OUTAGE_WARN_SECONDS = 15 * 60;
+
+    private final ApplicationEventPublisher events;
     private volatile long lastHourTs = 0;
     private volatile boolean ready = false;
+    private long failingSince = 0;
+    private boolean outageReported = false;
+    private String lastError = "";
 
     public MarketService(TornClient torn, TornsyClient tornsy, StockRepository repo, TradingService trading,
-                         SelectionService selection, PortfolioService portfolio, BotProperties props) {
+                         SelectionService selection, PortfolioService portfolio, BotProperties props,
+                         ApplicationEventPublisher events) {
+        this.events = events;
         this.torn = torn;
         this.tornsy = tornsy;
         this.repo = repo;
@@ -58,7 +69,10 @@ public class MarketService {
             backfill();
         }
         selection.runSelection();
-        lastHourTs = System.currentTimeMillis() / 1000 / 3600 * 3600;
+        // Resume from the last hour actually processed, so a restart just after the hour still runs that
+        // hour's checks. First ever start: begin from the current hour.
+        lastHourTs = repo.setting(LAST_HOUR_SETTING).map(Long::parseLong)
+                .orElse(System.currentTimeMillis() / 1000 / 3600 * 3600);
         ready = true;
     }
 
@@ -74,13 +88,38 @@ public class MarketService {
             Long boundary = null;
             if (hour > lastHourTs) {
                 boundary = hour;
-                lastHourTs = hour;
             }
+            collectionSucceeded(now);
             Map<Integer, StockRow> stocks = portfolio.stocksById();
             trading.onMinute(stocks, now, boundary);
+            if (boundary != null) {
+                lastHourTs = boundary;
+                repo.saveSetting(LAST_HOUR_SETTING, Long.toString(boundary));
+            }
         } catch (Exception e) {
             log.warn("Price collection failed: {}", e.getMessage());
+            collectionFailed(e.getMessage());
         }
+    }
+
+    private void collectionFailed(String error) {
+        long now = System.currentTimeMillis() / 1000;
+        lastError = error == null ? "unknown error" : error;
+        if (failingSince == 0) {
+            failingSince = now;
+        }
+        if (!outageReported && now - failingSince >= OUTAGE_WARN_SECONDS) {
+            outageReported = true;
+            events.publishEvent(new TradeEvents.CollectionHealth(true, lastError, failingSince, now));
+        }
+    }
+
+    private void collectionSucceeded(long now) {
+        if (outageReported) {
+            events.publishEvent(new TradeEvents.CollectionHealth(false, lastError, failingSince, now));
+        }
+        failingSince = 0;
+        outageReported = false;
     }
 
     private long collect() throws Exception {

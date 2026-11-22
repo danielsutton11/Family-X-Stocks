@@ -190,6 +190,15 @@ public class StockRepository {
                 maxHoldUntil, reason);
     }
 
+    public void setAlertMessageId(long positionId, String messageId) {
+        jdbc.update("update model_position set alert_message_id = ? where id = ?", messageId, positionId);
+    }
+
+    public Optional<String> alertMessageId(long positionId) {
+        return jdbc.queryForList("select alert_message_id from model_position where id = ? and alert_message_id is not null",
+                String.class, positionId).stream().findFirst();
+    }
+
     public void updateHighWater(long id, double highWater) {
         jdbc.update("update model_position set high_water = ? where id = ?", highWater, id);
     }
