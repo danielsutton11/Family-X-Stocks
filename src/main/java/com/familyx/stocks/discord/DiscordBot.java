@@ -17,6 +17,7 @@ import net.dv8tion.jda.api.JDABuilder;
 import net.dv8tion.jda.api.entities.MessageEmbed;
 import net.dv8tion.jda.api.entities.channel.concrete.TextChannel;
 import net.dv8tion.jda.api.events.interaction.ModalInteractionEvent;
+import net.dv8tion.jda.api.exceptions.InsufficientPermissionException;
 import net.dv8tion.jda.api.events.interaction.component.ButtonInteractionEvent;
 import net.dv8tion.jda.api.events.session.ReadyEvent;
 import net.dv8tion.jda.api.hooks.ListenerAdapter;
@@ -131,17 +132,31 @@ public class DiscordBot extends ListenerAdapter {
             log.warn("Couldn't build the panel yet: {}", e.getMessage());
             return;
         }
-        Optional<String> existing = repo.setting(PANEL_SETTING);
-        if (existing.isPresent()) {
-            ch.retrieveMessageById(existing.get()).queue(
-                    msg -> msg.editMessageEmbeds(embed).setComponents(panelButtons()).queue(),
-                    err -> postPanel(ch, embed));
-        } else {
-            postPanel(ch, embed);
+        try {
+            Optional<String> existing = repo.setting(PANEL_SETTING);
+            if (existing.isPresent()) {
+                ch.retrieveMessageById(existing.get()).queue(
+                        msg -> msg.editMessageEmbeds(embed).setComponents(panelButtons()).queue(),
+                        err -> postPanel(ch, embed));
+            } else {
+                postPanel(ch, embed);
+            }
+        } catch (InsufficientPermissionException e) {
+            log.warn("Can't post the control panel in #{}: missing {}. Fix the channel permissions; "
+                    + "the bot retries every hour and on restart.", ch.getName(), e.getPermission().getName());
         }
     }
 
     private void postPanel(TextChannel ch, MessageEmbed embed) {
+        try {
+            sendPanel(ch, embed);
+        } catch (InsufficientPermissionException e) {
+            log.warn("Can't post the control panel in #{}: missing {}. Fix the channel permissions; "
+                    + "the bot retries every hour and on restart.", ch.getName(), e.getPermission().getName());
+        }
+    }
+
+    private void sendPanel(TextChannel ch, MessageEmbed embed) {
         ch.sendMessageEmbeds(embed).setComponents(panelButtons()).queue(
                 msg -> {
                     repo.saveSetting(PANEL_SETTING, msg.getId());
@@ -240,12 +255,16 @@ public class DiscordBot extends ListenerAdapter {
             log.warn("Alert channel {} not found", cfg.alertChannelId());
             return;
         }
-        var msg = ch.sendMessageEmbeds(embed);
-        if (!blank(cfg.alertRoleId())) {
-            // mentionRoles whitelists just this role, so the ping works without allowing @everyone.
-            msg = msg.setContent("<@&" + cfg.alertRoleId() + ">").mentionRoles(cfg.alertRoleId());
+        try {
+            var msg = ch.sendMessageEmbeds(embed);
+            if (!blank(cfg.alertRoleId())) {
+                // mentionRoles whitelists just this role, so the ping works without allowing @everyone.
+                msg = msg.setContent("<@&" + cfg.alertRoleId() + ">").mentionRoles(cfg.alertRoleId());
+            }
+            msg.queue(null, err -> log.warn("Couldn't post alert: {}", err.getMessage()));
+        } catch (InsufficientPermissionException e) {
+            log.warn("Can't post alerts in #{}: missing {}", ch.getName(), e.getPermission().getName());
         }
-        msg.queue(null, err -> log.warn("Couldn't post alert: {}", err.getMessage()));
     }
 
     // ---------- replies ----------

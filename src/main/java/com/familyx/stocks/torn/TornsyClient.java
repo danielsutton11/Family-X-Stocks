@@ -31,37 +31,32 @@ public class TornsyClient {
         this.mapper = mapper;
     }
 
-    /** Hourly bars newer than {@code sinceTs}, oldest first. */
-    public List<Bar> hourlyBars(String acronym, long sinceTs) throws IOException, InterruptedException {
-        List<Bar> all = new ArrayList<>();
-        Long to = null;
-        for (int page = 0; page < 10; page++) {
-            String url = String.format(Locale.ROOT, "https://tornsy.com/api/%s?interval=h1&limit=%d&from=%d%s",
-                    acronym.toLowerCase(Locale.ROOT), PAGE, sinceTs, to == null ? "" : "&to=" + to);
-            HttpRequest req = HttpRequest.newBuilder(URI.create(url)).timeout(Duration.ofSeconds(30))
-                    .header("accept", "application/json").GET().build();
-            HttpResponse<String> res = http.send(req, HttpResponse.BodyHandlers.ofString());
-            if (res.statusCode() != 200) {
-                throw new IOException("Tornsy returned HTTP " + res.statusCode() + " for " + acronym);
-            }
-            JsonNode data = mapper.readTree(res.body()).path("data");
-            long oldest = Long.MAX_VALUE;
-            int rows = 0;
-            for (JsonNode row : data) {
-                // [timestamp, open, high, low, close, total_shares]; prices arrive as strings.
-                long ts = row.get(0).asLong();
-                all.add(new Bar(ts / 3600 * 3600, num(row.get(1)), num(row.get(2)), num(row.get(3)), num(row.get(4))));
-                oldest = Math.min(oldest, ts);
-                rows++;
-            }
-            if (rows < PAGE || oldest <= sinceTs) {
-                break;
-            }
-            to = oldest;
-            Thread.sleep(500); // be polite to a free community service
+    /** Hours per request: below Tornsy's 2000-row limit, so a window always comes back whole. */
+    public static final long WINDOW_SECONDS = 1900L * 3600;
+
+    /**
+     * Hourly bars in {@code [fromTs, toTs)}, oldest first. Callers keep each window to {@link #WINDOW_SECONDS} so
+     * the result never depends on which end of a longer range Tornsy would cut off.
+     */
+    public List<Bar> hourlyBars(String acronym, long fromTs, long toTs) throws IOException, InterruptedException {
+        String url = String.format(Locale.ROOT, "https://tornsy.com/api/%s?interval=h1&limit=%d&from=%d&to=%d",
+                acronym.toLowerCase(Locale.ROOT), PAGE, fromTs, toTs);
+        HttpRequest req = HttpRequest.newBuilder(URI.create(url)).timeout(Duration.ofSeconds(30))
+                .header("accept", "application/json").GET().build();
+        HttpResponse<String> res = http.send(req, HttpResponse.BodyHandlers.ofString());
+        if (res.statusCode() != 200) {
+            throw new IOException("Tornsy returned HTTP " + res.statusCode() + " for " + acronym);
         }
-        all.sort(Comparator.comparingLong(Bar::ts));
-        return all;
+        List<Bar> bars = new ArrayList<>();
+        for (JsonNode row : mapper.readTree(res.body()).path("data")) {
+            // [timestamp, open, high, low, close, total_shares]; prices arrive as strings.
+            long ts = row.get(0).asLong() / 3600 * 3600;
+            if (ts >= fromTs && ts < toTs) {
+                bars.add(new Bar(ts, num(row.get(1)), num(row.get(2)), num(row.get(3)), num(row.get(4))));
+            }
+        }
+        bars.sort(Comparator.comparingLong(Bar::ts));
+        return bars;
     }
 
     private static double num(JsonNode n) {

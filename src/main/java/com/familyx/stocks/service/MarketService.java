@@ -95,19 +95,32 @@ public class MarketService {
         return now;
     }
 
+    /**
+     * Walks the backfill period in fixed windows and fetches any window that is less than 90% covered. Safe to
+     * run on every start: complete windows are skipped, and gaps (including ones left by earlier runs) get filled.
+     */
     private void backfill() {
-        long since = System.currentTimeMillis() / 1000 - props.tornsy().backfillMonths() * 30L * 86400;
+        long currentHour = System.currentTimeMillis() / 1000 / 3600 * 3600;
+        long since = currentHour - props.tornsy().backfillMonths() * 30L * 86400;
+        long window = TornsyClient.WINDOW_SECONDS;
         for (StockRow s : repo.stocks()) {
-            // Skip stocks that already have history reaching back to the backfill window (with a week of slack).
-            if (repo.oldestBarTs(s.id()) <= since + 7 * 86400) {
-                continue;
-            }
+            int added = 0;
             try {
-                List<Bar> bars = tornsy.hourlyBars(s.acronym(), since);
-                long currentHour = System.currentTimeMillis() / 1000 / 3600 * 3600;
-                // The live collector owns the current hour's bar.
-                repo.insertBarsIfAbsent(s.id(), bars.stream().filter(b -> b.ts() < currentHour).toList());
-                log.info("Backfilled {} hourly bars for {}", bars.size(), s.acronym());
+                for (long from = since; from < currentHour; from += window) {
+                    // The live collector owns the current hour's bar.
+                    long to = Math.min(from + window, currentHour);
+                    long expected = (to - from) / 3600;
+                    if (repo.countBars(s.id(), from, to) >= expected * 0.9) {
+                        continue;
+                    }
+                    List<Bar> bars = tornsy.hourlyBars(s.acronym(), from, to);
+                    repo.insertBarsIfAbsent(s.id(), bars);
+                    added += bars.size();
+                    Thread.sleep(300); // be polite to a free community service
+                }
+                long total = repo.countBars(s.id(), since, currentHour);
+                log.info("History for {}: {} hourly bars over the last {} months ({} fetched now)",
+                        s.acronym(), total, props.tornsy().backfillMonths(), added);
             } catch (Exception e) {
                 log.warn("Backfill failed for {}: {}", s.acronym(), e.getMessage());
             }

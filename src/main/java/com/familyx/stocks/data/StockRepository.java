@@ -82,9 +82,10 @@ public class StockRepository {
                 });
     }
 
-    public long oldestBarTs(int stockId) {
-        Long ts = jdbc.queryForObject("select min(ts) from bar_hourly where stock_id = ?", Long.class, stockId);
-        return ts == null ? Long.MAX_VALUE : ts;
+    public long countBars(int stockId, long fromTs, long toTs) {
+        Long n = jdbc.queryForObject("select count(*) from bar_hourly where stock_id = ? and ts >= ? and ts < ?",
+                Long.class, stockId, fromTs, toTs);
+        return n == null ? 0 : n;
     }
 
     /** The latest {@code limit} completed bars before {@code beforeTs}, oldest first. */
