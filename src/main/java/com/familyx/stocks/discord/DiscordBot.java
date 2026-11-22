@@ -1,0 +1,302 @@
+package com.familyx.stocks.discord;
+
+import com.familyx.stocks.config.BotProperties;
+import com.familyx.stocks.data.Models.StockRow;
+import com.familyx.stocks.data.StockRepository;
+import com.familyx.stocks.engine.BacktestResult;
+import com.familyx.stocks.engine.Backtester;
+import com.familyx.stocks.engine.Bar;
+import com.familyx.stocks.engine.Indicators;
+import com.familyx.stocks.engine.Strategies;
+import com.familyx.stocks.engine.Strategy;
+import com.familyx.stocks.service.PortfolioService;
+import com.familyx.stocks.service.TradeEvents;
+import jakarta.annotation.PreDestroy;
+import net.dv8tion.jda.api.JDA;
+import net.dv8tion.jda.api.JDABuilder;
+import net.dv8tion.jda.api.entities.MessageEmbed;
+import net.dv8tion.jda.api.entities.channel.concrete.TextChannel;
+import net.dv8tion.jda.api.events.interaction.ModalInteractionEvent;
+import net.dv8tion.jda.api.events.interaction.component.ButtonInteractionEvent;
+import net.dv8tion.jda.api.events.session.ReadyEvent;
+import net.dv8tion.jda.api.hooks.ListenerAdapter;
+import net.dv8tion.jda.api.interactions.InteractionHook;
+import net.dv8tion.jda.api.interactions.components.ActionRow;
+import net.dv8tion.jda.api.interactions.components.buttons.Button;
+import net.dv8tion.jda.api.interactions.components.text.TextInput;
+import net.dv8tion.jda.api.interactions.components.text.TextInputStyle;
+import net.dv8tion.jda.api.interactions.modals.Modal;
+import net.dv8tion.jda.api.interactions.modals.ModalMapping;
+import net.dv8tion.jda.api.requests.restaction.interactions.ReplyCallbackAction;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.boot.context.event.ApplicationReadyEvent;
+import org.springframework.context.event.EventListener;
+import org.springframework.core.annotation.Order;
+import org.springframework.scheduling.annotation.Scheduled;
+import org.springframework.stereotype.Component;
+
+import java.util.Comparator;
+import java.util.List;
+import java.util.Optional;
+import java.util.function.Supplier;
+
+/**
+ * Discord front end with two channels:
+ * <ul>
+ *   <li>a control channel holding one panel embed with buttons, edited in place on restart and every hour;</li>
+ *   <li>an alerts channel where buy and sell calls are posted, pinging the alert role.</li>
+ * </ul>
+ * Button and form replies are ephemeral, so the control channel only ever shows the panel.
+ */
+@Component
+public class DiscordBot extends ListenerAdapter {
+    private static final Logger log = LoggerFactory.getLogger(DiscordBot.class);
+    private static final String PANEL_SETTING = "panel_message_id";
+
+    private static final String BTN_SIGNALS = "panel:signals";
+    private static final String BTN_SIZE = "panel:size";
+    private static final String BTN_PERFORMANCE = "panel:performance";
+    private static final String BTN_STOCK = "panel:stock";
+    private static final String BTN_STRATEGIES = "panel:strategies";
+    private static final String BTN_BACKTEST = "panel:backtest";
+    private static final String MODAL_SIZE = "modal:size";
+    private static final String MODAL_STOCK = "modal:stock";
+    private static final String MODAL_BACKTEST = "modal:backtest";
+
+    private final BotProperties.Discord cfg;
+    private final StockRepository repo;
+    private final PortfolioService portfolio;
+    private volatile JDA jda;
+
+    public DiscordBot(BotProperties props, StockRepository repo, PortfolioService portfolio) {
+        this.cfg = props.discord();
+        this.repo = repo;
+        this.portfolio = portfolio;
+    }
+
+    /** Starts before the market backfill so the panel works while history loads. */
+    @EventListener(ApplicationReadyEvent.class)
+    @Order(0)
+    public void start() {
+        if (blank(cfg.token())) {
+            log.warn("DISCORD_TOKEN is not set; running without Discord");
+            return;
+        }
+        jda = JDABuilder.createLight(cfg.token()).addEventListeners(this).build();
+    }
+
+    @PreDestroy
+    public void stop() {
+        if (jda != null) {
+            jda.shutdown();
+        }
+    }
+
+    @Override
+    public void onReady(ReadyEvent event) {
+        log.info("Discord bot ready as {}", event.getJDA().getSelfUser().getName());
+        refreshPanel();
+    }
+
+    // ---------- control panel ----------
+
+    private static List<ActionRow> panelButtons() {
+        return List.of(
+                ActionRow.of(
+                        Button.primary(BTN_SIGNALS, "Open positions"),
+                        Button.success(BTN_SIZE, "Size for my budget"),
+                        Button.secondary(BTN_PERFORMANCE, "Performance")),
+                ActionRow.of(
+                        Button.secondary(BTN_STOCK, "Stock lookup"),
+                        Button.secondary(BTN_STRATEGIES, "Strategies"),
+                        Button.secondary(BTN_BACKTEST, "Backtest")));
+    }
+
+    /** Edits the existing panel message, or posts a new one if it was deleted or never posted. Runs hourly. */
+    @Scheduled(cron = "30 0 * * * *")
+    public void refreshPanel() {
+        if (jda == null || blank(cfg.controlChannelId())) {
+            return;
+        }
+        TextChannel ch = jda.getTextChannelById(cfg.controlChannelId());
+        if (ch == null) {
+            log.warn("Control channel {} not found", cfg.controlChannelId());
+            return;
+        }
+        MessageEmbed embed;
+        try {
+            embed = Embeds.panel(portfolio.snapshot(), repo.assignments().size(), cfg.alertChannelId());
+        } catch (Exception e) {
+            log.warn("Couldn't build the panel yet: {}", e.getMessage());
+            return;
+        }
+        Optional<String> existing = repo.setting(PANEL_SETTING);
+        if (existing.isPresent()) {
+            ch.retrieveMessageById(existing.get()).queue(
+                    msg -> msg.editMessageEmbeds(embed).setComponents(panelButtons()).queue(),
+                    err -> postPanel(ch, embed));
+        } else {
+            postPanel(ch, embed);
+        }
+    }
+
+    private void postPanel(TextChannel ch, MessageEmbed embed) {
+        ch.sendMessageEmbeds(embed).setComponents(panelButtons()).queue(
+                msg -> {
+                    repo.saveSetting(PANEL_SETTING, msg.getId());
+                    msg.pin().queue(null, err -> log.info("Couldn't pin the panel (needs Manage Messages): {}", err.getMessage()));
+                },
+                err -> log.warn("Couldn't post the panel: {}", err.getMessage()));
+    }
+
+    @Override
+    public void onButtonInteraction(ButtonInteractionEvent event) {
+        switch (event.getComponentId()) {
+            case BTN_SIGNALS -> answer(event.deferReply(true), () -> Embeds.signals(portfolio.snapshot()), event.getComponentId());
+            case BTN_PERFORMANCE -> answer(event.deferReply(true), this::performance, event.getComponentId());
+            case BTN_STRATEGIES -> answer(event.deferReply(true),
+                    () -> Embeds.strategies(repo.assignments(), portfolio.stocksById()), event.getComponentId());
+            case BTN_SIZE -> event.replyModal(Modal.create(MODAL_SIZE, "Size for your budget")
+                    .addComponents(ActionRow.of(TextInput.create("budget", "Budget", TextInputStyle.SHORT)
+                            .setPlaceholder("2b, 500m or 1,500,000").setRequired(true).setMaxLength(30).build()))
+                    .build()).queue();
+            case BTN_STOCK -> event.replyModal(Modal.create(MODAL_STOCK, "Stock lookup")
+                    .addComponents(ActionRow.of(stockInput()))
+                    .build()).queue();
+            case BTN_BACKTEST -> event.replyModal(Modal.create(MODAL_BACKTEST, "Backtest a stock")
+                    .addComponents(ActionRow.of(stockInput()),
+                            ActionRow.of(TextInput.create("strategy", "Strategy (leave blank for all)", TextInputStyle.SHORT)
+                                    .setPlaceholder("meanrev-168-2.0").setRequired(false).setMaxLength(40).build()))
+                    .build()).queue();
+            default -> {
+                // Buttons from other bots or old panels: ignore.
+            }
+        }
+    }
+
+    private static TextInput stockInput() {
+        return TextInput.create("stock", "Stock acronym", TextInputStyle.SHORT)
+                .setPlaceholder("FHG").setRequired(true).setMaxLength(8).build();
+    }
+
+    @Override
+    public void onModalInteraction(ModalInteractionEvent event) {
+        switch (event.getModalId()) {
+            case MODAL_SIZE -> answer(event.deferReply(true),
+                    () -> Embeds.size(portfolio.snapshot(), Fmt.parseBudget(value(event, "budget"))), event.getModalId());
+            case MODAL_STOCK -> answer(event.deferReply(true), () -> stock(value(event, "stock")), event.getModalId());
+            case MODAL_BACKTEST -> answer(event.deferReply(true), () -> {
+                String strategy = value(event, "strategy");
+                return backtest(value(event, "stock"), strategy.isBlank() ? null : strategy.trim());
+            }, event.getModalId());
+            default -> {
+            }
+        }
+    }
+
+    private static String value(ModalInteractionEvent event, String id) {
+        ModalMapping m = event.getValue(id);
+        return m == null ? "" : m.getAsString();
+    }
+
+    /** Acknowledges privately first (Discord allows 3 seconds), then builds the reply and reports errors kindly. */
+    private void answer(ReplyCallbackAction defer,
+                        Supplier<MessageEmbed> build, String what) {
+        defer.queue(hook -> reply(hook, build, what));
+    }
+
+    private void reply(InteractionHook hook, Supplier<MessageEmbed> build, String what) {
+        MessageEmbed embed;
+        try {
+            embed = build.get();
+        } catch (IllegalArgumentException e) {
+            embed = Embeds.error(e.getMessage());
+        } catch (Exception e) {
+            log.error("Panel action {} failed", what, e);
+            embed = Embeds.error("Something went wrong. Try again in a minute.");
+        }
+        hook.sendMessageEmbeds(embed).setEphemeral(true).queue();
+    }
+
+    // ---------- alerts ----------
+
+    @EventListener
+    public void onOpened(TradeEvents.Opened e) {
+        post(Embeds.buy(e.position(), e.stock(), e.evidence()));
+    }
+
+    @EventListener
+    public void onClosed(TradeEvents.Closed e) {
+        post(Embeds.sell(e.position(), e.stock()));
+    }
+
+    private void post(MessageEmbed embed) {
+        if (jda == null || blank(cfg.alertChannelId())) {
+            return;
+        }
+        TextChannel ch = jda.getTextChannelById(cfg.alertChannelId());
+        if (ch == null) {
+            log.warn("Alert channel {} not found", cfg.alertChannelId());
+            return;
+        }
+        var msg = ch.sendMessageEmbeds(embed);
+        if (!blank(cfg.alertRoleId())) {
+            // mentionRoles whitelists just this role, so the ping works without allowing @everyone.
+            msg = msg.setContent("<@&" + cfg.alertRoleId() + ">").mentionRoles(cfg.alertRoleId());
+        }
+        msg.queue(null, err -> log.warn("Couldn't post alert: {}", err.getMessage()));
+    }
+
+    // ---------- replies ----------
+
+    private MessageEmbed performance() {
+        var snap = portfolio.snapshot();
+        var stocks = portfolio.stocksById();
+        return Embeds.performance(snap, portfolio.benchmarkSinceInception(snap.inceptionTs()), repo.closedCounts(),
+                repo.maxDrawdown(), repo.assignments(), repo.closedPositions(5), stocks);
+    }
+
+    private StockRow requireStock(String acronym) {
+        return repo.stockByAcronym(acronym.trim())
+                .orElseThrow(() -> new IllegalArgumentException("No stock called " + acronym.trim() + ". Try an acronym like FHG."));
+    }
+
+    private MessageEmbed stock(String acronym) {
+        StockRow s = requireStock(acronym);
+        long now = System.currentTimeMillis() / 1000;
+        long hour = now / 3600 * 3600;
+        List<Bar> bars = repo.bars(s.id(), hour, 168);
+        double z = bars.size() >= 168 ? Indicators.zScore(bars, 168) : Double.NaN;
+        var holding = portfolio.snapshot().holdings().stream().filter(h -> h.stock().id() == s.id()).findFirst().orElse(null);
+        return Embeds.stock(s, change(s, now - 3600), change(s, now - 86400), change(s, now - 7 * 86400), z,
+                repo.assignment(s.id()).orElse(null), holding);
+    }
+
+    private Double change(StockRow s, long ts) {
+        return repo.closeAtOrBefore(s.id(), ts).map(p -> s.price() / p - 1).orElse(null);
+    }
+
+    private MessageEmbed backtest(String acronym, String strategyId) {
+        StockRow s = requireStock(acronym);
+        long hour = System.currentTimeMillis() / 1000 / 3600 * 3600;
+        List<Bar> bars = repo.bars(s.id(), hour, 24 * 366);
+        List<Strategy> strategies;
+        if (strategyId != null) {
+            strategies = List.of(Strategies.byId(strategyId).orElseThrow(() -> new IllegalArgumentException(
+                    "No strategy called " + strategyId + ". The Strategies button lists the ids in use.")));
+        } else {
+            strategies = Strategies.all();
+        }
+        if (bars.size() < 200) {
+            throw new IllegalArgumentException("Not enough history for " + s.acronym() + " yet (" + bars.size() + " hours).");
+        }
+        List<BacktestResult> results = strategies.stream().map(st -> Backtester.run(st, bars))
+                .sorted(Comparator.comparingDouble(BacktestResult::totalReturn).reversed()).toList();
+        return Embeds.backtest(s, results, bars.size());
+    }
+
+    private static boolean blank(String s) {
+        return s == null || s.isBlank();
+    }
+}

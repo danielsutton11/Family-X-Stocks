@@ -1,0 +1,40 @@
+spring:
+  application:
+    name: torn-stock-bot
+  main:
+    web-application-type: none
+  datasource:
+    # Railway's Postgres service exposes these variables; reference them on the bot service.
+    url: jdbc:postgresql://${PGHOST:localhost}:${PGPORT:5432}/${PGDATABASE:railway}
+    username: ${PGUSER:postgres}
+    password: ${PGPASSWORD:postgres}
+    hikari:
+      maximum-pool-size: 5
+  flyway:
+    enabled: true
+
+bot:
+  torn:
+    api-key: ${TORN_API_KEY:}
+  tornsy:
+    backfill-enabled: ${TORNSY_BACKFILL:true}
+    backfill-months: ${TORNSY_BACKFILL_MONTHS:12}
+  discord:
+    token: ${DISCORD_TOKEN:}
+    # Channel holding the control panel (one embed with buttons).
+    control-channel-id: ${DISCORD_CONTROL_CHANNEL_ID:}
+    # Channel for buy and sell alerts, which ping the role below.
+    alert-channel-id: ${DISCORD_ALERT_CHANNEL_ID:}
+    alert-role-id: ${DISCORD_ALERT_ROLE_ID:1574038019638296647}
+  trading:
+    # Share of model-portfolio equity put into each new position.
+    position-size: ${TRADING_POSITION_SIZE:0.10}
+    # Never open a position smaller than this share of equity.
+    min-position: ${TRADING_MIN_POSITION:0.02}
+    # Days of minute ticks to keep; hourly bars are kept for good.
+    tick-retention-days: ${TICK_RETENTION_DAYS:14}
+
+logging:
+  level:
+    net.dv8tion: WARN
+    com.familyx: INFO
