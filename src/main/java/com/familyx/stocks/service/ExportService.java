@@ -15,12 +15,17 @@ import com.familyx.stocks.engine.StrategySelector;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.stereotype.Service;
 
+import java.io.ByteArrayOutputStream;
+import java.io.OutputStreamWriter;
+import java.io.Writer;
+import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.zip.GZIPOutputStream;
 
 /**
  * Builds one JSON file with everything needed to review and tune the bot: settings, portfolio summary, every
@@ -42,7 +47,8 @@ public class ExportService {
         this.mapper = mapper;
     }
 
-    public record Export(byte[] json, int trades, int equityPoints, int stocks, int strategies) {
+    public record Export(byte[] json, int trades, int equityPoints, int stocks, int strategies,
+                         byte[] barsCsvGz, int barRows) {
     }
 
     public Export build() throws Exception {
@@ -139,7 +145,33 @@ public class ExportService {
         root.put("backtests", backtests);
 
         byte[] json = mapper.writerWithDefaultPrettyPrinter().writeValueAsBytes(root);
-        return new Export(json, trades.size(), curve.size(), backtests.size(), Strategies.all().size());
+        BarsFile bars = barsCsvGz(stocks);
+        return new Export(json, trades.size(), curve.size(), backtests.size(), Strategies.all().size(),
+                bars.bytes(), bars.rows());
+    }
+
+    private record BarsFile(byte[] bytes, int rows) {
+    }
+
+    /**
+     * Every stored hourly bar as gzipped CSV ({@code stock,ts,open,high,low,close}, ts in epoch seconds), so
+     * portfolio-level simulations can be run offline with the bot's own engine. Read one stock at a time to keep
+     * memory flat; about 300k rows and 3 MB compressed for a year of 35 stocks.
+     */
+    private BarsFile barsCsvGz(Map<Integer, StockRow> stocks) throws Exception {
+        ByteArrayOutputStream buffer = new ByteArrayOutputStream();
+        int rows = 0;
+        try (Writer w = new OutputStreamWriter(new GZIPOutputStream(buffer), StandardCharsets.UTF_8)) {
+            w.write("stock,ts,open,high,low,close\n");
+            for (StockRow s : stocks.values()) {
+                for (Bar b : repo.bars(s.id(), Long.MAX_VALUE, Integer.MAX_VALUE)) {
+                    w.write(s.acronym() + "," + b.ts() + "," + b.open() + "," + b.high() + "," + b.low() + ","
+                            + b.close() + "\n");
+                    rows++;
+                }
+            }
+        }
+        return new BarsFile(buffer.toByteArray(), rows);
     }
 
     private static Map<String, Object> stats(BacktestResult r) {

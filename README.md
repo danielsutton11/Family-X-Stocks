@@ -46,7 +46,7 @@ Discord's 15-minute limit for editing interaction replies), so the channel only 
 | Strategies | Every stock's assigned strategy with its backtest numbers |
 | Backtest | Pop-up asks for an acronym and optional strategy id; backtests stored history |
 | How it works | Plain-English guide to the model portfolio, alerts, strategy selection and the buttons |
-| Export data | Owner only. Private JSON file with settings, every trade, the equity curve and every strategy's backtest on every stock (with the rule each one failed), for uploading to Claude to tune settings |
+| Export data | Owner only. Two private files for uploading to Claude to tune settings: a JSON file with settings, every trade, the equity curve and every strategy's backtest on every stock (with the rule each one failed), and a gzipped CSV of every stored hourly bar (`stock,ts,open,high,low,close`, about 3 MB) for portfolio simulations |
 
 If someone deletes the panel, the next hourly refresh or restart posts a new one.
 

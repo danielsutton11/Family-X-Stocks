@@ -291,8 +291,10 @@ public class DiscordBot extends ListenerAdapter {
             MessageEditBuilder msg = new MessageEditBuilder().setContent(EXPIRY_NOTE);
             try {
                 ExportService.Export ex = exports.build();
-                String name = "stock-bot-export-" + EXPORT_NAME.format(Instant.now()) + ".json";
-                msg.setEmbeds(Embeds.exportReady(ex)).setFiles(FileUpload.fromData(ex.json(), name));
+                String stamp = EXPORT_NAME.format(Instant.now());
+                msg.setEmbeds(Embeds.exportReady(ex)).setFiles(
+                        FileUpload.fromData(ex.json(), "stock-bot-export-" + stamp + ".json"),
+                        FileUpload.fromData(ex.barsCsvGz(), "stock-bot-bars-" + stamp + ".csv.gz"));
             } catch (Exception e) {
                 log.error("Export failed", e);
                 msg.setEmbeds(Embeds.error("Export failed. Check the bot logs."));

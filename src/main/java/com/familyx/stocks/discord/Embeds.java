@@ -257,11 +257,12 @@ public final class Embeds {
     public static MessageEmbed exportReady(ExportService.Export ex) {
         return new EmbedBuilder().setColor(INFO)
                 .setTitle("Export ready")
-                .setDescription("Download the file and upload it to Claude.\n\n"
+                .setDescription("Download both files and upload them to Claude.\n\n"
                         + "Settings and selection rules: current\n"
                         + "Trades (open and closed): " + ex.trades() + "\n"
                         + "Hourly equity curve: " + ex.equityPoints() + " points\n"
-                        + "Strategy backtests: " + ex.stocks() + " stocks × " + ex.strategies())
+                        + "Strategy backtests: " + ex.stocks() + " stocks × " + ex.strategies() + "\n"
+                        + "Hourly price bars: " + String.format(Locale.US, "%,d", ex.barRows()) + " rows")
                 .setFooter("Backtests include why each rejected strategy failed, so near-misses are visible")
                 .build();
     }
