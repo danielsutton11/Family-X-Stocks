@@ -137,6 +137,7 @@ public class DiscordBot extends ListenerAdapter {
     public void onReady(ReadyEvent event) {
         log.info("Discord bot ready as {}", event.getJDA().getSelfUser().getName());
         refreshPanel();
+        ensureRebalanceButton();
     }
 
     // ---------- control panel ----------
@@ -332,7 +333,7 @@ public class DiscordBot extends ListenerAdapter {
     @EventListener
     public void onRebalanced(TradeEvents.Rebalanced r) {
         Optional<String> previous = repo.setting(LAST_REBALANCE_SETTING);
-        post(Embeds.rebalance(r), r.changed(), msg -> {
+        post(Embeds.rebalance(r), r.changed(), rebalanceButtons(), msg -> {
             repo.saveSetting(LAST_REBALANCE_SETTING, msg.getId());
             previous.ifPresent(id -> supersede(id, r.ts()));
         });
@@ -346,7 +347,7 @@ public class DiscordBot extends ListenerAdapter {
         }
         ch.retrieveMessageById(messageId).queue(msg -> {
             if (!msg.getEmbeds().isEmpty()) {
-                msg.editMessageEmbeds(Embeds.superseded(msg.getEmbeds().get(0), newTs)).queue(null,
+                msg.editMessageEmbeds(Embeds.superseded(msg.getEmbeds().get(0), newTs)).setComponents(List.of()).queue(null,
                         err -> log.warn("Couldn't mark the old rebalance superseded: {}", err.getMessage()));
             }
         }, err -> log.info("Previous rebalance message {} not found; skipping", messageId));
@@ -387,7 +388,34 @@ public class DiscordBot extends ListenerAdapter {
         }
     }
 
+    /** The button on the live rebalance alert; it opens the same budget form as the panel. */
+    private static List<ActionRow> rebalanceButtons() {
+        return List.of(ActionRow.of(Button.success(BTN_SIZE, "Size for my budget")));
+    }
+
+    /**
+     * Adds the button to the latest rebalance alert if it hasn't got one (alerts posted before the button existed).
+     * Runs once on startup.
+     */
+    private void ensureRebalanceButton() {
+        Optional<String> id = repo.setting(LAST_REBALANCE_SETTING);
+        TextChannel ch = jda == null || blank(cfg.alertChannelId()) ? null : jda.getTextChannelById(cfg.alertChannelId());
+        if (id.isEmpty() || ch == null) {
+            return;
+        }
+        ch.retrieveMessageById(id.get()).queue(msg -> {
+            if (msg.getActionRows().isEmpty()) {
+                msg.editMessageComponents(rebalanceButtons()).queue(null,
+                        err -> log.warn("Couldn't add the button to the latest rebalance: {}", err.getMessage()));
+            }
+        }, err -> log.info("Latest rebalance message {} not found; skipping", id.get()));
+    }
+
     private void post(MessageEmbed embed, boolean pingRole, Consumer<Message> onSent) {
+        post(embed, pingRole, List.of(), onSent);
+    }
+
+    private void post(MessageEmbed embed, boolean pingRole, List<ActionRow> rows, Consumer<Message> onSent) {
         if (jda == null || blank(cfg.alertChannelId())) {
             return;
         }
@@ -404,7 +432,7 @@ public class DiscordBot extends ListenerAdapter {
             return;
         }
         try {
-            var msg = ch.sendMessageEmbeds(embed);
+            var msg = ch.sendMessageEmbeds(embed).setComponents(rows);
             if (pingRole && !blank(cfg.alertRoleId())) {
                 // mentionRoles whitelists just this role, so the ping works without allowing @everyone.
                 msg = msg.setContent("<@&" + cfg.alertRoleId() + ">").mentionRoles(cfg.alertRoleId());
