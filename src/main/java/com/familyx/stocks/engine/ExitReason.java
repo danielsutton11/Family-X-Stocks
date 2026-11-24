@@ -5,7 +5,8 @@ public enum ExitReason {
     STOP("stop-loss hit"),
     TRAILING_STOP("trailing stop hit"),
     MAX_HOLD("held for the maximum time"),
-    SIGNAL("strategy exit signal");
+    SIGNAL("strategy exit signal"),
+    ROTATION("rotated out");
 
     private final String label;
 

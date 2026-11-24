@@ -91,4 +91,20 @@ class EngineTest {
         assertEquals(1_500d, Fmt.parseBudget("1.5k"));
         assertEquals(2_000_000d, Fmt.parseBudget("$2,000,000"));
     }
+
+    @Test
+    void rotationKeepsHoldingsUntilTheyLeaveTheKeepZone() {
+        // stock id = position in ranking; ids 0..11, 0 is furthest below average
+        java.util.Map<Integer, Double> gaps = new java.util.HashMap<>();
+        for (int i = 0; i < 12; i++) {
+            gaps.put(i, -0.05 + i * 0.01);
+        }
+        var ranking = Rotation.rank(gaps);
+        var p = new Rotation.Params(672, 72, 5, 10);
+        // holding 3 (rank 3, keep), 8 (rank 8, keep) and 11 (rank 11, sell)
+        var plan = Rotation.plan(ranking, java.util.Set.of(3, 8, 11), p);
+        assertEquals(java.util.List.of(11), plan.sell());
+        assertEquals(java.util.List.of(0, 1, 2), plan.buy());
+        assertEquals(java.util.List.of(3, 8), plan.keep());
+    }
 }

@@ -30,8 +30,15 @@ bot:
     alert-role-id: ${DISCORD_ALERT_ROLE_ID:1574038019638296647}
     # Your Discord user id: only this user can use Export data. Blank means server administrators.
     owner-id: ${DISCORD_OWNER_ID:}
+  rotation:
+    # Members follow this: hold the stocks furthest below their 4-week average, rebalanced every 3 days.
+    lookback-hours: ${ROTATION_LOOKBACK_HOURS:672}
+    every-hours: ${ROTATION_EVERY_HOURS:72}
+    hold: ${ROTATION_HOLD:5}
+    keep: ${ROTATION_KEEP:10}
+    anchor-hour-utc: ${ROTATION_ANCHOR_HOUR_UTC:18}
   trading:
-    # Share of model-portfolio equity put into each new position.
+    # Paper dip strategy (kept for comparison). Share of its equity put into each new position.
     position-size: ${TRADING_POSITION_SIZE:0.10}
     # Never open a position smaller than this share of equity.
     min-position: ${TRADING_MIN_POSITION:0.02}

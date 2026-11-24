@@ -168,25 +168,26 @@ public class StockRepository {
         return Double.isInfinite(d) ? 999 : d;
     }
 
-    // ---------- model portfolio ----------
+    // ---------- model portfolios (books) ----------
 
-    public PortfolioState portfolio(long nowTs) {
-        jdbc.update("insert into portfolio_state (id, cash, inception_ts) values (1, 1.0, ?) on conflict do nothing", nowTs);
-        return jdbc.queryForObject("select cash, inception_ts from portfolio_state where id = 1",
-                (rs, i) -> new PortfolioState(rs.getDouble(1), rs.getLong(2)));
+    public PortfolioState portfolio(Book book, long nowTs) {
+        jdbc.update("insert into portfolio_state (id, cash, inception_ts, book) values (?, 1.0, ?, ?) on conflict do nothing",
+                book.stateId(), nowTs, book.key());
+        return jdbc.queryForObject("select cash, inception_ts from portfolio_state where book = ?",
+                (rs, i) -> new PortfolioState(rs.getDouble(1), rs.getLong(2)), book.key());
     }
 
-    public void setCash(double cash) {
-        jdbc.update("update portfolio_state set cash = ? where id = 1", cash);
+    public void setCash(Book book, double cash) {
+        jdbc.update("update portfolio_state set cash = ? where book = ?", cash, book.key());
     }
 
-    public long openPosition(int stockId, String strategyId, long ts, double price, double units, double alloc,
+    public long openPosition(Book book, int stockId, String strategyId, long ts, double price, double units, double alloc,
                              Double target, Double stop, Double trailPct, long maxHoldUntil, String reason) {
         return jdbc.queryForObject("""
-                insert into model_position (stock_id, strategy_id, status, entry_ts, entry_price, units, alloc,
+                insert into model_position (book, stock_id, strategy_id, status, entry_ts, entry_price, units, alloc,
                     target, stop, trail_pct, high_water, max_hold_until, reason)
-                values (?, ?, 'OPEN', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) returning id
-                """, Long.class, stockId, strategyId, ts, price, units, alloc, target, stop, trailPct, price,
+                values (?, ?, ?, 'OPEN', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) returning id
+                """, Long.class, book.key(), stockId, strategyId, ts, price, units, alloc, target, stop, trailPct, price,
                 maxHoldUntil, reason);
     }
 
@@ -210,20 +211,21 @@ public class StockRepository {
                 """, ts, price, reason, netReturn, id);
     }
 
-    public List<Position> openPositions() {
-        return jdbc.query("select * from model_position where status = 'OPEN' order by entry_ts",
-                StockRepository::position);
+    public List<Position> openPositions(Book book) {
+        return jdbc.query("select * from model_position where status = 'OPEN' and book = ? order by entry_ts",
+                StockRepository::position, book.key());
     }
 
-    public List<Position> closedPositions(int limit) {
-        return jdbc.query("select * from model_position where status = 'CLOSED' order by exit_ts desc limit ?",
-                StockRepository::position, limit);
+    public List<Position> closedPositions(Book book, int limit) {
+        return jdbc.query("select * from model_position where status = 'CLOSED' and book = ? order by exit_ts desc limit ?",
+                StockRepository::position, book.key(), limit);
     }
 
-    public int[] closedCounts() {
+    public int[] closedCounts(Book book) {
         return jdbc.queryForObject("""
-                select count(*), count(*) filter (where net_return > 0) from model_position where status = 'CLOSED'
-                """, (rs, i) -> new int[]{rs.getInt(1), rs.getInt(2)});
+                select count(*), count(*) filter (where net_return > 0) from model_position
+                where status = 'CLOSED' and book = ?
+                """, (rs, i) -> new int[]{rs.getInt(1), rs.getInt(2)}, book.key());
     }
 
     private static Position position(ResultSet rs, int i) throws SQLException {
@@ -232,25 +234,28 @@ public class StockRepository {
                 rs.getDouble("alloc"), rs.getObject("target", Double.class), rs.getObject("stop", Double.class),
                 rs.getObject("trail_pct", Double.class), rs.getDouble("high_water"), rs.getLong("max_hold_until"),
                 rs.getString("reason"), rs.getObject("exit_ts", Long.class), rs.getObject("exit_price", Double.class),
-                rs.getString("exit_reason"), rs.getObject("net_return", Double.class));
+                rs.getString("exit_reason"), rs.getObject("net_return", Double.class), rs.getString("book"));
     }
 
     public List<Position> allPositions() {
         return jdbc.query("select * from model_position order by entry_ts", StockRepository::position);
     }
 
-    public List<Models.EquityPoint> equityCurve() {
-        return jdbc.query("select ts, equity from equity_snapshot order by ts",
-                (rs, i) -> new Models.EquityPoint(rs.getLong(1), rs.getDouble(2)));
+    public List<Models.EquityPoint> equityCurve(Book book) {
+        return jdbc.query("select ts, equity from equity_snapshot where book = ? order by ts",
+                (rs, i) -> new Models.EquityPoint(rs.getLong(1), rs.getDouble(2)), book.key());
     }
 
-    public void snapshotEquity(long ts, double equity) {
-        jdbc.update("insert into equity_snapshot (ts, equity) values (?, ?) on conflict (ts) do update set equity = excluded.equity",
-                ts, equity);
+    public void snapshotEquity(Book book, long ts, double equity) {
+        jdbc.update("""
+                insert into equity_snapshot (book, ts, equity) values (?, ?, ?)
+                on conflict (book, ts) do update set equity = excluded.equity
+                """, book.key(), ts, equity);
     }
 
-    public double maxDrawdown() {
-        List<Double> eq = jdbc.queryForList("select equity from equity_snapshot order by ts", Double.class);
+    public double maxDrawdown(Book book) {
+        List<Double> eq = jdbc.queryForList("select equity from equity_snapshot where book = ? order by ts",
+                Double.class, book.key());
         double peak = Double.NEGATIVE_INFINITY;
         double dd = 0;
         for (double e : eq) {

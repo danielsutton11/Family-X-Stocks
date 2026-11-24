@@ -1,6 +1,7 @@
 package com.familyx.stocks.service;
 
 import com.familyx.stocks.config.BotProperties;
+import com.familyx.stocks.data.Book;
 import com.familyx.stocks.data.Models.Assignment;
 import com.familyx.stocks.data.Models.Position;
 import com.familyx.stocks.data.Models.StockRow;
@@ -16,7 +17,6 @@ import com.familyx.stocks.engine.Strategies;
 import com.familyx.stocks.engine.Strategy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionTemplate;
 
@@ -27,11 +27,11 @@ import java.util.Optional;
 import java.util.Set;
 
 /**
- * Runs the model portfolio. Every minute it checks open positions against their stops and targets at the live
- * price. When an hourly bar completes it also checks indicator exits and looks for new entries.
+ * Runs the dip strategy on the paper {@link Book#DIP} portfolio, so it can be compared with rotation (which
+ * members follow). Every minute it checks open positions against their stops and targets at the live price.
+ * When an hourly bar completes it also checks indicator exits and looks for new entries. It posts no alerts.
  *
- * <p>The live loop mirrors the backtester: same strategies, same exit rules, same fee. The one difference is
- * that live fills are at the current price, because members act on the alert, not at the stop level.
+ * <p>The live loop mirrors the backtester: same strategies, same exit rules, same fee.
  */
 @Service
 public class TradingService {
@@ -39,14 +39,13 @@ public class TradingService {
     private static final int LIVE_BARS = Math.max(800, Strategies.maxWarmup() * 4);
 
     private final StockRepository repo;
-    private final ApplicationEventPublisher events;
+    private static final Book BOOK = Book.DIP;
+
     private final TransactionTemplate tx;
     private final BotProperties.Trading cfg;
 
-    public TradingService(StockRepository repo, ApplicationEventPublisher events, TransactionTemplate tx,
-                          BotProperties props) {
+    public TradingService(StockRepository repo, TransactionTemplate tx, BotProperties props) {
         this.repo = repo;
-        this.events = events;
         this.tx = tx;
         this.cfg = props.trading();
     }
@@ -55,10 +54,10 @@ public class TradingService {
      * @param boundaryTs start of the hour that just began when the previous bar has completed, otherwise null
      */
     public synchronized void onMinute(Map<Integer, StockRow> stocks, long nowTs, Long boundaryTs) {
-        double cash = repo.portfolio(nowTs).cash();
+        double cash = repo.portfolio(BOOK, nowTs).cash();
         Set<Integer> held = new HashSet<>();
 
-        for (Position p : repo.openPositions()) {
+        for (Position p : repo.openPositions(BOOK)) {
             StockRow s = stocks.get(p.stockId());
             if (s == null) {
                 held.add(p.stockId());
@@ -88,11 +87,11 @@ public class TradingService {
         }
 
         double equity = cash;
-        for (Position p : repo.openPositions()) {
+        for (Position p : repo.openPositions(BOOK)) {
             StockRow s = stocks.get(p.stockId());
             equity += p.units() * (s == null ? p.entryPrice() : s.price());
         }
-        repo.snapshotEquity(boundaryTs, equity);
+        repo.snapshotEquity(BOOK, boundaryTs, equity);
 
         for (Assignment a : repo.assignments()) {
             if (held.contains(a.stockId())) {
@@ -121,16 +120,13 @@ public class TradingService {
                         long nowTs, double cash) {
         double price = s.price();
         double newCash = cash - alloc;
-        Long id = tx.execute(status -> {
-            long pid = repo.openPosition(s.id(), strategy.id(), nowTs, price, alloc / price, alloc / equity,
+        tx.executeWithoutResult(status -> {
+            repo.openPosition(BOOK, s.id(), strategy.id(), nowTs, price, alloc / price, alloc / equity,
                     nullIfNaN(e.target()), nullIfNaN(e.stop()), nullIfNaN(e.trailPct()),
                     nowTs + e.maxHoldHours() * 3600L, e.reason());
-            repo.setCash(newCash);
-            return pid;
+            repo.setCash(BOOK, newCash);
         });
-        log.info("BUY {} at {} with {} ({})", s.acronym(), price, strategy.id(), e.reason());
-        repo.openPositions().stream().filter(p -> p.id() == id).findFirst()
-                .ifPresent(p -> events.publishEvent(new TradeEvents.Opened(p, s, evidence)));
+        log.info("[paper dip] BUY {} at {} with {} ({})", s.acronym(), price, strategy.id(), e.reason());
         return newCash;
     }
 
@@ -140,13 +136,9 @@ public class TradingService {
         double newCash = cash + proceeds;
         tx.executeWithoutResult(status -> {
             repo.closePosition(p.id(), nowTs, price, reason.name(), net);
-            repo.setCash(newCash);
+            repo.setCash(BOOK, newCash);
         });
-        log.info("SELL {} at {} ({}), net {}%", s.acronym(), price, reason, Math.round(net * 10000) / 100.0);
-        Position closed = new Position(p.id(), p.stockId(), p.strategyId(), "CLOSED", p.entryTs(), p.entryPrice(),
-                p.units(), p.alloc(), p.target(), p.stop(), p.trailPct(), p.highWater(), p.maxHoldUntil(),
-                p.reason(), nowTs, price, reason.name(), net);
-        events.publishEvent(new TradeEvents.Closed(closed, s));
+        log.info("[paper dip] SELL {} at {} ({}), net {}%", s.acronym(), price, reason, Math.round(net * 10000) / 100.0);
         return newCash;
     }
 

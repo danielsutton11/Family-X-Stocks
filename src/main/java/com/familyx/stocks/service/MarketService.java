@@ -30,6 +30,7 @@ public class MarketService {
     private final TornsyClient tornsy;
     private final StockRepository repo;
     private final TradingService trading;
+    private final RotationService rotation;
     private final SelectionService selection;
     private final PortfolioService portfolio;
     private final BotProperties props;
@@ -46,9 +47,10 @@ public class MarketService {
     private String lastError = "";
 
     public MarketService(TornClient torn, TornsyClient tornsy, StockRepository repo, TradingService trading,
-                         SelectionService selection, PortfolioService portfolio, BotProperties props,
-                         ApplicationEventPublisher events) {
+                         RotationService rotation, SelectionService selection, PortfolioService portfolio,
+                         BotProperties props, ApplicationEventPublisher events) {
         this.events = events;
+        this.rotation = rotation;
         this.torn = torn;
         this.tornsy = tornsy;
         this.repo = repo;
@@ -91,7 +93,13 @@ public class MarketService {
             }
             collectionSucceeded(now);
             Map<Integer, StockRow> stocks = portfolio.stocksById();
-            trading.onMinute(stocks, now, boundary);
+            rotation.onMinute(stocks, now, boundary);
+            try {
+                trading.onMinute(stocks, now, boundary);
+            } catch (Exception e) {
+                // The paper dip portfolio must never stop the live rotation portfolio.
+                log.warn("Paper dip strategy failed this minute: {}", e.getMessage());
+            }
             if (boundary != null) {
                 lastHourTs = boundary;
                 repo.saveSetting(LAST_HOUR_SETTING, Long.toString(boundary));

@@ -1,5 +1,6 @@
 package com.familyx.stocks.service;
 
+import com.familyx.stocks.data.Book;
 import com.familyx.stocks.data.Models.Position;
 import com.familyx.stocks.data.Models.StockRow;
 import com.familyx.stocks.data.StockRepository;
@@ -30,10 +31,15 @@ public class PortfolioService {
         }
     }
 
+    /** The main (rotation) portfolio members follow. */
     public Snapshot snapshot() {
+        return snapshot(Book.MAIN);
+    }
+
+    public Snapshot snapshot(Book book) {
         Map<Integer, StockRow> stocks = stocksById();
-        var state = repo.portfolio(System.currentTimeMillis() / 1000);
-        List<Position> open = repo.openPositions();
+        var state = repo.portfolio(book, System.currentTimeMillis() / 1000);
+        List<Position> open = repo.openPositions(book);
         double equity = state.cash();
         for (Position p : open) {
             equity += p.units() * stocks.get(p.stockId()).price();

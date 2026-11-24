@@ -1,6 +1,7 @@
 package com.familyx.stocks.service;
 
 import com.familyx.stocks.config.BotProperties;
+import com.familyx.stocks.data.Book;
 import com.familyx.stocks.data.Models.Assignment;
 import com.familyx.stocks.data.Models.EquityPoint;
 import com.familyx.stocks.data.Models.Position;
@@ -58,11 +59,12 @@ public class ExportService {
         var criteria = StrategySelector.Criteria.defaults();
 
         Map<String, Object> root = new LinkedHashMap<>();
-        root.put("format", "family-x-stock-bot-export/1");
+        root.put("format", "family-x-stock-bot-export/2");
         root.put("exported_at", iso(now));
 
         Map<String, Object> settings = new LinkedHashMap<>();
-        settings.put("position_size", props.trading().positionSize());
+        settings.put("rotation", props.rotation());
+        settings.put("dip_position_size", props.trading().positionSize());
         settings.put("min_position", props.trading().minPosition());
         settings.put("sell_fee", Fees.SELL_FEE);
         settings.put("backfill_months", props.tornsy().backfillMonths());
@@ -70,25 +72,33 @@ public class ExportService {
         settings.put("strategies", Strategies.all().stream().map(Strategy::id).toList());
         root.put("settings", settings);
 
-        var snap = portfolio.snapshot();
-        int[] closed = repo.closedCounts();
-        Map<String, Object> summary = new LinkedHashMap<>();
-        summary.put("inception", iso(snap.inceptionTs()));
-        summary.put("equity", round(snap.equity()));
-        summary.put("return", round(snap.equity() - 1));
-        summary.put("buy_and_hold_return", round(portfolio.benchmarkSinceInception(snap.inceptionTs())));
-        summary.put("cash_weight", round(snap.cashWeight()));
-        summary.put("open_positions", snap.holdings().size());
-        summary.put("closed_trades", closed[0]);
-        summary.put("winning_trades", closed[1]);
-        summary.put("max_drawdown", round(repo.maxDrawdown()));
-        root.put("portfolio", summary);
+        Map<String, Object> books = new LinkedHashMap<>();
+        for (Book book : Book.values()) {
+            var snap = portfolio.snapshot(book);
+            int[] closed = repo.closedCounts(book);
+            Map<String, Object> summary = new LinkedHashMap<>();
+            summary.put("strategy", book == Book.MAIN ? "rotation (live, members follow)" : "dip strategies (paper)");
+            summary.put("inception", iso(snap.inceptionTs()));
+            summary.put("equity", round(snap.equity()));
+            summary.put("return", round(snap.equity() - 1));
+            summary.put("buy_and_hold_return", round(portfolio.benchmarkSinceInception(snap.inceptionTs())));
+            summary.put("cash_weight", round(snap.cashWeight()));
+            summary.put("open_positions", snap.holdings().size());
+            summary.put("closed_trades", closed[0]);
+            summary.put("winning_trades", closed[1]);
+            summary.put("max_drawdown", round(repo.maxDrawdown(book)));
+            summary.put("equity_curve", repo.equityCurve(book).stream()
+                    .map(e -> Arrays.asList(iso(e.ts()), round(e.equity()))).toList());
+            books.put(book.key(), summary);
+        }
+        root.put("portfolios", books);
 
         List<Map<String, Object>> trades = new ArrayList<>();
         for (Position p : repo.allPositions()) {
             StockRow s = stocks.get(p.stockId());
             Map<String, Object> t = new LinkedHashMap<>();
             t.put("id", p.id());
+            t.put("book", p.book());
             t.put("stock", s == null ? String.valueOf(p.stockId()) : s.acronym());
             t.put("strategy", p.strategyId());
             t.put("status", p.status());
@@ -114,9 +124,7 @@ public class ExportService {
         }
         root.put("trades", trades);
 
-        List<EquityPoint> curve = repo.equityCurve();
-        root.put("equity_curve", curve.stream()
-                .map(e -> Arrays.asList(iso(e.ts()), round(e.equity()))).toList());
+        int curvePoints = repo.equityCurve(Book.MAIN).size();
 
         Map<Integer, Assignment> assigned = new LinkedHashMap<>();
         repo.assignments().forEach(a -> assigned.put(a.stockId(), a));
@@ -146,7 +154,7 @@ public class ExportService {
 
         byte[] json = mapper.writerWithDefaultPrettyPrinter().writeValueAsBytes(root);
         BarsFile bars = barsCsvGz(stocks);
-        return new Export(json, trades.size(), curve.size(), backtests.size(), Strategies.all().size(),
+        return new Export(json, trades.size(), curvePoints, backtests.size(), Strategies.all().size(),
                 bars.bytes(), bars.rows());
     }
 

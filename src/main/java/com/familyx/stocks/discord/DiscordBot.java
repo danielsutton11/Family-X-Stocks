@@ -11,7 +11,10 @@ import com.familyx.stocks.engine.Indicators;
 import com.familyx.stocks.engine.Strategies;
 import com.familyx.stocks.engine.Strategy;
 import com.familyx.stocks.service.PortfolioService;
+import com.familyx.stocks.data.Book;
+import com.familyx.stocks.engine.Rotation;
 import com.familyx.stocks.service.ExportService;
+import com.familyx.stocks.service.RotationService;
 import com.familyx.stocks.service.TradeEvents;
 import jakarta.annotation.PreDestroy;
 import net.dv8tion.jda.api.JDA;
@@ -52,6 +55,8 @@ import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.util.Comparator;
 import java.util.EnumSet;
+import java.util.HashSet;
+import java.util.Set;
 import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.TimeUnit;
@@ -84,7 +89,8 @@ public class DiscordBot extends ListenerAdapter {
     private static final String BTN_SIZE = "panel:size";
     private static final String BTN_PERFORMANCE = "panel:performance";
     private static final String BTN_STOCK = "panel:stock";
-    private static final String BTN_STRATEGIES = "panel:strategies";
+    private static final String BTN_RANKINGS = "panel:rankings";
+    private static final String LAST_REBALANCE_SETTING = "last_rebalance_message_id";
     private static final String BTN_BACKTEST = "panel:backtest";
     private static final String BTN_HELP = "panel:help";
     private static final String BTN_EXPORT = "panel:export";
@@ -96,9 +102,12 @@ public class DiscordBot extends ListenerAdapter {
     private final StockRepository repo;
     private final PortfolioService portfolio;
     private final ExportService exports;
+    private final RotationService rotation;
     private volatile JDA jda;
 
-    public DiscordBot(BotProperties props, StockRepository repo, PortfolioService portfolio, ExportService exports) {
+    public DiscordBot(BotProperties props, StockRepository repo, PortfolioService portfolio, ExportService exports,
+                      RotationService rotation) {
+        this.rotation = rotation;
         this.cfg = props.discord();
         this.repo = repo;
         this.portfolio = portfolio;
@@ -140,7 +149,7 @@ public class DiscordBot extends ListenerAdapter {
                         Button.secondary(BTN_PERFORMANCE, "Performance")),
                 ActionRow.of(
                         Button.secondary(BTN_STOCK, "Stock lookup"),
-                        Button.secondary(BTN_STRATEGIES, "Strategies"),
+                        Button.secondary(BTN_RANKINGS, "Rankings"),
                         Button.secondary(BTN_BACKTEST, "Backtest"),
                         Button.secondary(BTN_HELP, "How it works").withEmoji(Emoji.fromUnicode("❔")),
                         Button.secondary(BTN_EXPORT, "Export data").withEmoji(Emoji.fromUnicode("📥"))));
@@ -159,7 +168,8 @@ public class DiscordBot extends ListenerAdapter {
         }
         MessageEmbed embed;
         try {
-            embed = Embeds.panel(portfolio.snapshot(), repo.assignments().size(), cfg.alertChannelId());
+            embed = Embeds.panel(portfolio.snapshot(), rotation.params(),
+                    rotation.nextRebalanceTs(System.currentTimeMillis() / 1000), cfg.alertChannelId());
         } catch (Exception e) {
             log.warn("Couldn't build the panel yet: {}", e.getMessage());
             return;
@@ -204,8 +214,7 @@ public class DiscordBot extends ListenerAdapter {
             case BTN_PERFORMANCE -> answer(event.deferReply(true), this::performance, event.getComponentId());
             case BTN_EXPORT -> export(event);
             case BTN_HELP -> answer(event.deferReply(true), Embeds::help, event.getComponentId());
-            case BTN_STRATEGIES -> answer(event.deferReply(true),
-                    () -> Embeds.strategies(repo.assignments(), portfolio.stocksById()), event.getComponentId());
+            case BTN_RANKINGS -> answer(event.deferReply(true), this::rankings, event.getComponentId());
             case BTN_SIZE -> event.replyModal(Modal.create(MODAL_SIZE, "Size for your budget")
                     .addComponents(ActionRow.of(TextInput.create("budget", "Budget", TextInputStyle.SHORT)
                             .setPlaceholder("2b, 500m or 1,500,000").setRequired(true).setMaxLength(30).build()))
@@ -319,6 +328,30 @@ public class DiscordBot extends ListenerAdapter {
         markBuyAlertClosed(e.position());
     }
 
+    /** Posts the rebalance alert (pinging the role only when something changes) and greys out the previous one. */
+    @EventListener
+    public void onRebalanced(TradeEvents.Rebalanced r) {
+        Optional<String> previous = repo.setting(LAST_REBALANCE_SETTING);
+        post(Embeds.rebalance(r), r.changed(), msg -> {
+            repo.saveSetting(LAST_REBALANCE_SETTING, msg.getId());
+            previous.ifPresent(id -> supersede(id, r.ts()));
+        });
+        refreshPanel();
+    }
+
+    private void supersede(String messageId, long newTs) {
+        TextChannel ch = jda == null || blank(cfg.alertChannelId()) ? null : jda.getTextChannelById(cfg.alertChannelId());
+        if (ch == null) {
+            return;
+        }
+        ch.retrieveMessageById(messageId).queue(msg -> {
+            if (!msg.getEmbeds().isEmpty()) {
+                msg.editMessageEmbeds(Embeds.superseded(msg.getEmbeds().get(0), newTs)).queue(null,
+                        err -> log.warn("Couldn't mark the old rebalance superseded: {}", err.getMessage()));
+            }
+        }, err -> log.info("Previous rebalance message {} not found; skipping", messageId));
+    }
+
     /** Greys out the position's original buy alert and adds the result. Alerts from before this feature are skipped. */
     private void markBuyAlertClosed(Position closed) {
         Optional<String> messageId = repo.alertMessageId(closed.id());
@@ -378,10 +411,21 @@ public class DiscordBot extends ListenerAdapter {
     // ---------- replies ----------
 
     private MessageEmbed performance() {
-        var snap = portfolio.snapshot();
+        var snap = portfolio.snapshot(Book.MAIN);
         var stocks = portfolio.stocksById();
-        return Embeds.performance(snap, portfolio.benchmarkSinceInception(snap.inceptionTs()), repo.closedCounts(),
-                repo.maxDrawdown(), repo.assignments(), repo.closedPositions(5), stocks);
+        return Embeds.performance(snap, portfolio.benchmarkSinceInception(snap.inceptionTs()), repo.closedCounts(Book.MAIN),
+                repo.maxDrawdown(Book.MAIN), repo.closedPositions(Book.MAIN, 5), stocks,
+                portfolio.snapshot(Book.DIP), repo.closedCounts(Book.DIP),
+                rotation.nextRebalanceTs(System.currentTimeMillis() / 1000));
+    }
+
+    private MessageEmbed rankings() {
+        var stocks = portfolio.stocksById();
+        long hour = System.currentTimeMillis() / 1000 / 3600 * 3600;
+        Set<Integer> held = new HashSet<>();
+        repo.openPositions(Book.MAIN).forEach(p -> held.add(p.stockId()));
+        return Embeds.rankings(rotation.ranking(stocks, hour + 3600), stocks, held, rotation.params(),
+                rotation.nextRebalanceTs(System.currentTimeMillis() / 1000));
     }
 
     private StockRow requireStock(String acronym) {
@@ -393,11 +437,11 @@ public class DiscordBot extends ListenerAdapter {
         StockRow s = requireStock(acronym);
         long now = System.currentTimeMillis() / 1000;
         long hour = now / 3600 * 3600;
-        List<Bar> bars = repo.bars(s.id(), hour, 168);
-        double z = bars.size() >= 168 ? Indicators.zScore(bars, 168) : Double.NaN;
+        List<Rotation.Rank> ranking = rotation.ranking(portfolio.stocksById(), hour + 3600);
+        Rotation.Rank rank = ranking.stream().filter(r -> r.stockId() == s.id()).findFirst().orElse(null);
         var holding = portfolio.snapshot().holdings().stream().filter(h -> h.stock().id() == s.id()).findFirst().orElse(null);
-        return Embeds.stock(s, change(s, now - 3600), change(s, now - 86400), change(s, now - 7 * 86400), z,
-                repo.assignment(s.id()).orElse(null), holding);
+        return Embeds.stock(s, change(s, now - 3600), change(s, now - 86400), change(s, now - 7 * 86400), rank,
+                ranking.size(), rotation.params(), repo.assignment(s.id()).orElse(null), holding);
     }
 
     private Double change(StockRow s, long ts) {
@@ -411,7 +455,7 @@ public class DiscordBot extends ListenerAdapter {
         List<Strategy> strategies;
         if (strategyId != null) {
             strategies = List.of(Strategies.byId(strategyId).orElseThrow(() -> new IllegalArgumentException(
-                    "No strategy called " + strategyId + ". The Strategies button lists the ids in use.")));
+                    "No strategy called " + strategyId + ". Try meanrev-168-2.0, trend-24-168 or breakout-72-24.")));
         } else {
             strategies = Strategies.all();
         }

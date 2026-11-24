@@ -18,7 +18,7 @@ public final class Models {
     public record Position(long id, int stockId, String strategyId, String status, long entryTs, double entryPrice,
                            double units, double alloc, Double target, Double stop, Double trailPct,
                            double highWater, long maxHoldUntil, String reason, Long exitTs, Double exitPrice,
-                           String exitReason, Double netReturn) {
+                           String exitReason, Double netReturn, String book) {
 
         public OpenTrade toTrade() {
             return new OpenTrade(entryPrice, entryTs, nanIfNull(target), nanIfNull(stop), nanIfNull(trailPct),
