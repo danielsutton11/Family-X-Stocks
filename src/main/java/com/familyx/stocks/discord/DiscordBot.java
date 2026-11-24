@@ -391,6 +391,13 @@ public class DiscordBot extends ListenerAdapter {
         if (jda == null || blank(cfg.alertChannelId())) {
             return;
         }
+        try {
+            // An alert can fire seconds after startup (the first rebalance does); wait for the guild cache.
+            jda.awaitReady();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return;
+        }
         TextChannel ch = jda.getTextChannelById(cfg.alertChannelId());
         if (ch == null) {
             log.warn("Alert channel {} not found", cfg.alertChannelId());

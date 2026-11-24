@@ -37,6 +37,7 @@ public class RotationService {
     private static final Logger log = LoggerFactory.getLogger(RotationService.class);
     private static final Book BOOK = Book.MAIN;
     private static final String NEXT_SETTING = "next_rebalance_ts";
+    private static final String STARTED_SETTING = "rotation_started";
 
     private final StockRepository repo;
     private final ApplicationEventPublisher events;
@@ -82,18 +83,35 @@ public class RotationService {
     public synchronized void onMinute(Map<Integer, StockRow> stocks, long nowTs, Long boundaryTs) {
         double cash = repo.portfolio(BOOK, nowTs).cash();
         cash = legacyExits(stocks, nowTs, cash);
+
+        // First run of rotation: buy straight away rather than waiting for the first scheduled slot, then join
+        // the fixed schedule at the first anchor time at least (every - 24) hours away.
+        if (repo.setting(STARTED_SETTING).isEmpty()) {
+            long hourStart = nowTs / 3600 * 3600;
+            long next = firstAnchorAtOrAfter(nowTs + (params.everyHours() - 24) * 3600L);
+            repo.saveSetting(NEXT_SETTING, Long.toString(next));
+            rebalance(stocks, nowTs, hourStart, cash, next);
+            repo.saveSetting(STARTED_SETTING, Long.toString(nowTs));
+            return;
+        }
+
         if (boundaryTs == null) {
             return;
         }
         repo.snapshotEquity(BOOK, boundaryTs, equity(stocks, cash));
         long next = nextRebalanceTs(nowTs);
         if (boundaryTs >= next) {
-            rebalance(stocks, nowTs, boundaryTs, cash);
             while (next <= boundaryTs) {
                 next += params.everyHours() * 3600L;
             }
+            rebalance(stocks, boundaryTs, boundaryTs, cash, next);
             repo.saveSetting(NEXT_SETTING, Long.toString(next));
         }
+    }
+
+    private long firstAnchorAtOrAfter(long ts) {
+        long anchor = ts / 86400 * 86400 + cfg.anchorHourUtc() * 3600L;
+        return anchor >= ts ? anchor : anchor + 86400;
     }
 
     private double equity(Map<Integer, StockRow> stocks, double cash) {
@@ -129,8 +147,13 @@ public class RotationService {
         return cash;
     }
 
-    private void rebalance(Map<Integer, StockRow> stocks, long nowTs, long boundaryTs, double cash) {
-        List<Rotation.Rank> ranking = ranking(stocks, boundaryTs);
+    /**
+     * @param nowTs        time of the rebalance (shown on the alert and stored on positions)
+     * @param rankBeforeTs rank on completed hourly bars before this time
+     * @param nextTs       when the following rebalance is due
+     */
+    private void rebalance(Map<Integer, StockRow> stocks, long nowTs, long rankBeforeTs, double cash, long nextTs) {
+        List<Rotation.Rank> ranking = ranking(stocks, rankBeforeTs);
         Map<Integer, Rotation.Rank> byStock = new HashMap<>();
         ranking.forEach(r -> byStock.put(r.stockId(), r));
         List<Position> open = repo.openPositions(BOOK);
@@ -179,9 +202,8 @@ public class RotationService {
             Rotation.Rank r = byStock.get(stockId);
             kept.add(new TradeEvents.Kept(s, p, Fees.netReturn(p.entryPrice(), s.price()), r == null ? -1 : r.rank()));
         }
-        long next = boundaryTs + params.everyHours() * 3600L;
         log.info("Rebalance done: sold {}, bought {}, kept {}", sold.size(), bought.size(), kept.size());
-        events.publishEvent(new TradeEvents.Rebalanced(boundaryTs, next, sold, bought, kept));
+        events.publishEvent(new TradeEvents.Rebalanced(nowTs, nextTs, sold, bought, kept));
     }
 
     private double sell(Position p, StockRow s, long nowTs, double cash, String reason) {

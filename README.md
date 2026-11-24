@@ -10,7 +10,8 @@ Dividends and benefit blocks are deliberately out of scope: this bot only buys a
 
 **Live strategy: rotation (what members follow).** Torn stock prices drift back towards their recent average over
 1–3 weeks (week-to-week returns are negatively correlated, about -0.2), while hour-to-hour moves are noise and the
-35 stocks move independently. So every 3 days, at 18:00 TCT, the bot:
+35 stocks move independently. So every 3 days, at 18:00 TCT, the bot (whose first rebalance runs as soon as
+rotation starts, then joins the 18:00 schedule):
 
 1. ranks all 35 stocks by how far the price sits below its 4-week (672-hour) average;
 2. sells any holding that now ranks outside the top 10;
